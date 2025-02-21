@@ -1,14 +1,14 @@
 from common_imports import *
-from nlp_model import NLP_Model
+from nlpmodel import NlpModel
+from .logging_config import *
 
-
-class Preprocessing_Model(NLP_Model):
+class PreprocessingModel(NlpModel):
     def __init__(self):
         super().__init__()
 
 
 if __name__ == "__main__":
-    model = Preprocessing_Model()
+    model = PreprocessingModel()
     
 
     
