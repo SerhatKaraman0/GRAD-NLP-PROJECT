@@ -8,12 +8,12 @@ build:  # Build the Docker image
 	docker build -t nlp_project .
 
 run:  # Run the container
-	docker run -d --name nlp_container -p 8080:8080 nlp_project
+	@docker start nlp_container 2>/dev/null || docker run -d --name nlp_container -p 8080:8080 nlp_project
 
 stop:  # Stop and remove the container
 	docker stop nlp_container && docker rm nlp_container
 
-logs:  # Show container logs
+docker-logs:  # Show container logs
 	docker logs -f nlp_container
 
 restart:  # Restart the container
