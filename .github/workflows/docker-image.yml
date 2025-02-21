@@ -20,10 +20,14 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # Set the timestamp
+      - name: Set timestamp
+        run: echo "TIMESTAMP=$(date +%s)" >> $GITHUB_ENV
+
       # Build the Docker image
       - name: Build the Docker image
-        run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+        run: docker build . --file Dockerfile --tag my-image-name:${{ env.TIMESTAMP }}
 
       # Push the image to Docker Hub
       - name: Push the Docker image
-        run: docker push my-image-name:$(date +%s)
+        run: docker push my-image-name:${{ env.TIMESTAMP }}
