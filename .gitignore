@@ -8,7 +8,7 @@ images/
 logs/
 *.cpython
 .DS_Store
-data/
+
 
 # Ignore build and generated files
 firebase_auth/
