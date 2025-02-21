@@ -7,9 +7,8 @@ class NLP_Model:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.info("Initializing NLP_Model")
         
-        self.BASE_DIR = os.path.dirname(os.path.abspath(''))
-        self.PROJECT_DIR = os.path.join(self.BASE_DIR, "NLP-Learning")
-        self.DATA_DIR = os.path.join(self.PROJECT_DIR, "data", "Reviews.csv")
+        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.DATA_DIR = os.path.join(self.BASE_DIR, "data", "Reviews.csv")
         
         self.df = pd.read_csv(self.DATA_DIR)
         self.cleaned_df = self.clean_unnecessary()
@@ -88,3 +87,9 @@ class NLP_Model:
 
 if __name__ == "__main__":
     model = NLP_Model()
+    model.inspect_df()
+    model.class_analysis()
+    model.grab_col_names()
+    model.null_values()
+
+

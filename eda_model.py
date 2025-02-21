@@ -12,7 +12,7 @@ class EDA_Model(NLP_Model):
         self.logger.info("Initializing EDA_Model")
         
         self.text_data = self.cleaned_df["Text"]
-        self.SAVE_DIR = os.path.join(self.PROJECT_DIR, "images", "plots")
+        self.SAVE_DIR = os.path.join(self.BASE_DIR, "images", "plots")
         self.logger.info("EDA_Model initialized successfully")
 
     async def plot_histogram(self, data, xlabel, ylabel, title, filename):
