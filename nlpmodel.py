@@ -1,7 +1,7 @@
 from pandas import DataFrame
 
 from common_imports import *
-from .logging_config import *
+from logging_config import *
 
 class NlpModel:
     def __init__(self):

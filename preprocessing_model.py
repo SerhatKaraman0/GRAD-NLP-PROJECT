@@ -1,6 +1,6 @@
 from common_imports import *
 from nlpmodel import NlpModel
-from .logging_config import *
+from logging_config import *
 
 class PreprocessingModel(NlpModel):
     def __init__(self):
