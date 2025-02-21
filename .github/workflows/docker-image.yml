@@ -27,14 +27,5 @@ jobs:
         # Show container logs
         echo "Container logs:"
         docker logs $CONTAINER_ID
-        
-        # Keep watching logs in background
-        docker logs -f $CONTAINER_ID &
-        
-        # Optional: Check if container is running
-        echo "Container status:"
-        docker ps | grep $CONTAINER_ID
 
-        # Optional: Show container details
-        echo "Container details:"
-        docker inspect $CONTAINER_ID
+        
