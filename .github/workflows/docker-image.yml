@@ -7,12 +7,34 @@ on:
     branches: [ "main" ]
 
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
+    
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+      run: docker build . --file Dockerfile --tag my-image-name:latest
+      
+    - name: Run the Docker image
+      run: |
+        # Run container and capture container ID
+        CONTAINER_ID=$(docker run -d -p 8080:8080 my-image-name:latest)
+        echo "Container ID: $CONTAINER_ID"
+        
+        # Wait for container to start
+        sleep 10
+        
+        # Show container logs
+        echo "Container logs:"
+        docker logs $CONTAINER_ID
+        
+        # Keep watching logs in background
+        docker logs -f $CONTAINER_ID &
+        
+        # Optional: Check if container is running
+        echo "Container status:"
+        docker ps | grep $CONTAINER_ID
+
+        # Optional: Show container details
+        echo "Container details:"
+        docker inspect $CONTAINER_ID
