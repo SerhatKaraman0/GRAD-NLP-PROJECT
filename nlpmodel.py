@@ -1,5 +1,3 @@
-from pandas import DataFrame
-
 from common_imports import *
 from logging_config import *
 
@@ -132,7 +130,7 @@ class NlpModel:
 
         return null_occur_bool, null_count, total_null_val, null_count_percent
 
-    def clean_unnecessary(self) -> DataFrame:
+    def clean_unnecessary(self):
         """
         Cleans the dataframe by removing unnecessary columns.
 

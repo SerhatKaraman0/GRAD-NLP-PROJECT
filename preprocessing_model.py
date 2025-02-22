@@ -37,8 +37,9 @@ class PreprocessingModel(NlpModel):
         self.logger.info(f"Number of data contains emoji: {count} | Percentage: {100 * count / len(self.df)}%")
     
     # TODO: Data Cleaning Functions
+    def clean_func(self):
+        pass
     # TODO: Lemmazation and Tokenization Functions
-    
 
 if __name__ == "__main__":
     model = PreprocessingModel()
