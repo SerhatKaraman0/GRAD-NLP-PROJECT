@@ -3,14 +3,29 @@ import pandas as pd
 import re
 from typing import List
 from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
 import numpy as np
 from langdetect import detect
 
-# Use absolute imports
-from common_imports import *  # Change from `..common_imports`
-from .nlpmodel import NlpModel
-from logging_config import *  # Change from `logging_config`
-from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  # Change from `utils.helper`
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.common_imports import * 
+from src.nlpmodel import NlpModel
+import timeit
+from src.logging_config import *  
+from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  
+
+
+from rich.console import Console
+from rich.table import Table
+from rich.progress import track
+
+console = Console()
 
 
 class PreprocessingModel(NlpModel):
@@ -28,7 +43,6 @@ class PreprocessingModel(NlpModel):
             'whitespace': re.compile(r'\s+')
         }
         
-
         self.word_replacements = {**SLANG_DICT, **CONTRACTIONS_DICT}
         
     def _count_pattern_matches(self, pattern_name: str) -> tuple:
@@ -42,19 +56,30 @@ class PreprocessingModel(NlpModel):
     def get_statistics(self) -> None:
         """Efficiently calculate all statistics at once"""
         self.logger.info("GETTING STATISTICS..")
+        table = Table(title="Pattern Statistics", show_header=True, header_style="bold magenta")
+        table.add_column("Pattern", style="cyan")
+        table.add_column("Count", style="green")
+        table.add_column("Percentage", style="yellow")
+
         for pattern_name in ['html', 'url', 'emoji']:
             count, percentage = self._count_pattern_matches(pattern_name)
-            self.logger.info(f"Number of data containing {pattern_name}: {count} | Percentage: {percentage:.2f}%")
+            table.add_row(pattern_name, str(count), f"{percentage:.2f}%")
 
-    @staticmethod # can be used outside of this class and dont need self
+        console.print(table)
+
+    @staticmethod
     def _process_chunk(args):
-        """Process a chunk of texts in parallel"""
+        """Process a chunk of texts in parallel using numpy for loop"""
         texts, patterns, word_replacements = args
-        processed = []
-        tokenized = []
+
+        if len(texts) == 0:
+            return [], []  # Return empty lists for empty chunks
+
+        processed = np.empty(len(texts), dtype=object)
+        tokenized = np.empty(len(texts), dtype=object)
         
-        for text in texts:
-            text = str(text).lower()
+        for i in range(len(texts)):
+            text = str(texts.iloc[i]).lower()  # Use .iloc to access by position
             
             text = patterns['whitespace'].sub(' ', text)
             text = patterns['extra_punctuation'].sub(r'\1', text)
@@ -66,10 +91,10 @@ class PreprocessingModel(NlpModel):
             words = [word_replacements.get(word, word) for word in words]
             processed_text = ' '.join(words)
             
-            processed.append(processed_text)
-            tokenized.append(word_tokenize(processed_text))
+            processed[i] = processed_text
+            tokenized[i] = word_tokenize(processed_text)
             
-        return processed, tokenized
+        return processed.tolist(), tokenized.tolist()
 
     def remove_foreign_words(self) -> None:
         """Remove non-English text efficiently"""
@@ -95,6 +120,10 @@ class PreprocessingModel(NlpModel):
         """Main preprocessing pipeline with M1-compatible parallel processing"""
         self.logger.info("PREPROCESSING STARTED..")
 
+        if self.df.empty or self.df['Text'].empty:
+            self.logger.error("DataFrame or 'Text' column is empty. Aborting preprocessing.")
+            return
+
         chunk_size = 1000
         n_cores = os.cpu_count() or 4
         
@@ -103,12 +132,19 @@ class PreprocessingModel(NlpModel):
         process_args = [(chunk, self.patterns, self.word_replacements) for chunk in chunks]
         
         with get_context('spawn').Pool(processes=n_cores) as pool:
-            results = pool.map(self._process_chunk, process_args)
+            results = list(track(
+                pool.imap(self._process_chunk, process_args),
+                total=len(process_args),
+                description="Processing chunks..."
+            ))
             
+            stop_words = set(stopwords.words('english'))
             processed_chunks, tokenized_chunks = zip(*results)
             
             processed_texts = [text for chunk in processed_chunks for text in chunk]
-            tokenized_texts = [tokens for chunk in tokenized_chunks for tokens in chunk]
+            
+            # Tokenization and removing stop words 
+            tokenized_texts = [tokens for chunk in tokenized_chunks for tokens in chunk if tokens not in stop_words]
 
             self.df['Text'] = processed_texts
             self.df['Tokens'] = tokenized_texts
@@ -122,17 +158,25 @@ class PreprocessingModel(NlpModel):
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
         
         self.df.to_csv(output_path, index=False)
-        print(f"Saved CSV file to: {output_path}")
+        console.print(f"[bold green]Saved CSV file to: {output_path}[/bold green]")
+
 
 if __name__ == "__main__":
-    # Ensure this code runs in a proper entry point for M1 compatibility
     model = PreprocessingModel()
     
-    OUTPUT_DIR = os.path.join(model.SAVE_DATA_DIR, f"OUTPUT_Reviews_{datetime.now()}.csv")
+    console.print("[bold cyan]DataFrame shape:[/bold cyan]", model.df.shape)
+    console.print("[bold cyan]First few rows of 'Text' column:[/bold cyan]")
+    console.print(model.df['Text'].head())
+    
+    OUTPUT_DIR = os.path.join(model.SAVE_DATA_DIR, "PREPROCESSED_Reviews.csv")
 
-    # model.preprocess_dataframe()
+    start_time = timeit.default_timer()
+    model.preprocess_dataframe()
+    elapsed = timeit.default_timer() - start_time
 
-    # model.save_to_csv(output_path=OUTPUT_DIR)
+    model.save_to_csv(output_path=OUTPUT_DIR)
 
-    print(model.df.head())
-    print("\nDataFrame columns:", model.df.columns.tolist())
+    console.print(f"[bold green]Preprocessing took {elapsed:.2f} seconds[/bold green]")
+    console.print("[bold cyan]Processed DataFrame:[/bold cyan]")
+    console.print(model.df.head())
+    console.print("\n[bold cyan]DataFrame columns:[/bold cyan]", model.df.columns.tolist())

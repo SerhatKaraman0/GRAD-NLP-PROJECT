@@ -1,5 +1,5 @@
-from common_imports import *
-from logging_config import *
+from src.common_imports import *
+from src.logging_config import *
 
 class NlpModel:
     def __init__(self):
@@ -8,7 +8,7 @@ class NlpModel:
         
         self.BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         self.DATA_DIR = os.path.join(self.BASE_DIR, "data", "Reviews.csv")
-        
+
         self.df = pd.read_csv(self.DATA_DIR)
         self.cleaned_df = self.clean_unnecessary()
         self.logger.info("NLP_Model initialized successfully")
