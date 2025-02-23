@@ -116,8 +116,6 @@ CONTRACTIONS_DICT = {
     "you're": "you are",
     "you've": "you have"
 }
-<<<<<<< HEAD
-
 
 SLANG_DICT = {
     "$" : " dollar ",
@@ -348,5 +346,3 @@ SLANG_DICT = {
     "ynk" : "you never know",
     "zzz" : "sleeping bored and tired"
 }
-=======
->>>>>>> 9c222e432e9463e678a9f80608b0ed7c9671c636

@@ -1,9 +1,6 @@
 from common_imports import *
-<<<<<<<< HEAD:src/edamodel.py
-from src.nlpmodel import NlpModel
-========
+
 from nlpmodel import NlpModel
->>>>>>>> 9c222e432e9463e678a9f80608b0ed7c9671c636:edamodel.py
 from logging_config import *
 
 matplotlib.use("Agg")

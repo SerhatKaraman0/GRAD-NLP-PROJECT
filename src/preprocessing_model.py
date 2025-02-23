@@ -13,7 +13,6 @@ from logging_config import *  # Change from `logging_config`
 from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  # Change from `utils.helper`
 
 
-
 class PreprocessingModel(NlpModel):
     def __init__(self):
         super().__init__()
