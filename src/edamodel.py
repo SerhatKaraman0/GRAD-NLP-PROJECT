@@ -1,5 +1,5 @@
 from common_imports import *
-from nlpmodel import NlpModel
+from src.nlpmodel import NlpModel
 from logging_config import *
 
 matplotlib.use("Agg")

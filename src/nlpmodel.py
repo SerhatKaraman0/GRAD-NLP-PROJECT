@@ -6,7 +6,7 @@ class NlpModel:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.info("Initializing NLP_Model")
         
-        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         self.DATA_DIR = os.path.join(self.BASE_DIR, "data", "Reviews.csv")
         
         self.df = pd.read_csv(self.DATA_DIR)
