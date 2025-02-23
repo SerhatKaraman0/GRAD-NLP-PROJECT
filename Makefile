@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 .PHONY: help setup clean build run stop logs restart ps exec test lint
 
 help:  # Show this help message
@@ -19,10 +20,19 @@ clean:  # Remove virtual environment and cached files
 	find . -type f -name "*.pyc" -delete
 	find . -type f -name ".DS_Store" -delete
 
+=======
+.PHONY: help build run stop logs restart ps exec
+
+help:
+	@echo "Available commands:"
+	@awk 'BEGIN {FS = ":.*?#"} /^[a-zA-Z_-]+:.*?#/ {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+>>>>>>> 9c222e432e9463e678a9f80608b0ed7c9671c636
 build:  # Build the Docker image
 	docker build -t nlp_project .
 
 run:  # Run the container
+<<<<<<< HEAD
 	@docker start nlp_container 2>/dev/null || docker run -d \
 		--name nlp_container \
 		-p 8080:8080 \
@@ -34,6 +44,12 @@ run:  # Run the container
 stop:  # Stop and remove the container
 	docker stop nlp_container || true
 	docker rm nlp_container || true
+=======
+	@docker start nlp_container 2>/dev/null || docker run -d --name nlp_container -p 8080:8080 nlp_project
+
+stop:  # Stop and remove the container
+	docker stop nlp_container && docker rm nlp_container
+>>>>>>> 9c222e432e9463e678a9f80608b0ed7c9671c636
 
 docker-logs:  # Show container logs
 	docker logs -f nlp_container
@@ -45,6 +61,7 @@ ps:  # Show running containers
 	docker ps -a
 
 exec:  # Open a shell inside the container
+<<<<<<< HEAD
 	docker exec -it nlp_container /bin/bash
 
 test:  # Run tests
@@ -54,3 +71,6 @@ lint:  # Run linting
 	. venv/bin/activate && \
 	flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics && \
 	flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+=======
+	docker exec -it nlp_container /bin/sh
+>>>>>>> 9c222e432e9463e678a9f80608b0ed7c9671c636
