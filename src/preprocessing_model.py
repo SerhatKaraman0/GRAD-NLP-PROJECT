@@ -46,7 +46,7 @@ class PreprocessingModel(NlpModel):
             count, percentage = self._count_pattern_matches(pattern_name)
             self.logger.info(f"Number of data containing {pattern_name}: {count} | Percentage: {percentage:.2f}%")
 
-    @staticmethod
+    @staticmethod # can be used outside of this class and dont need self
     def _process_chunk(args):
         """Process a chunk of texts in parallel"""
         texts, patterns, word_replacements = args
