@@ -29,7 +29,8 @@ jobs:
 
     - name: Run tests
       run: |
+        python -m venv venv
         source venv/bin/activate
         pip install -r requirements.txt
         echo "Running preprocessing tests"
-        pytest tests/test_preprocessing.py -s
+        venv/bin/python -m pytest tests/test_preprocessing.py -s
