@@ -2,6 +2,8 @@ from src.common_imports import *
 from src.logging_config import *
 
 class NlpModel:
+    __slots__ = ['logger', 'BASE_DIR', 'DATA_DIR', 'df', 'cleaned_df']
+
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.info("Initializing NLP_Model")
@@ -13,7 +15,8 @@ class NlpModel:
         self.cleaned_df = self.clean_unnecessary()
         self.logger.info("NLP_Model initialized successfully")
 
-    def print_section(self, title: str) -> None:
+    @staticmethod
+    def print_section(title: str) -> None:
         """Prints a formatted section header"""
         line = "═" * 30
         print(Fore.CYAN + line + f" {title} " + line + Style.RESET_ALL)

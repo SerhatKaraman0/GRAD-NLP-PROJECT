@@ -1,8 +1,14 @@
-.PHONY: help setup clean build run stop logs restart ps exec test lint
+.PHONY: help show-stats-preprocessing run-preprocessing setup clean build run stop logs restart ps exec test lint
 
 help:  # Show this help message
 	@echo "Available commands:"
 	@awk 'BEGIN {FS = ":.*?#"} /^[a-zA-Z_-]+:.*?#/ {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+show-stats-preprocessing: # shows performance stats of preprocessing class
+	tuna $(PWD)/stats/results.prof
+	
+run-preprocessing: # run preprocessing class functions
+	python3 -m src.preprocessing_model
 
 setup: clean  # Set up project environment and install dependencies
 	python3 -m venv venv
