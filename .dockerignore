@@ -116,3 +116,5 @@ vendor/
 *~
 *.tmp
 *.bak
+
+stats/
