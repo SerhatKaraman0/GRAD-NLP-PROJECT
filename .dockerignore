@@ -118,4 +118,3 @@ vendor/
 *.bak
 
 stats/
-data/PREPROCESSED_Reviews.csv

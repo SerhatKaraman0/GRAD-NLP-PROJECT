@@ -1,19 +1,22 @@
-from common_imports import *
-from logging_config import *
+from src.common_imports import *
+from src.logging_config import *
 
 class NlpModel:
+    __slots__ = ['logger', 'BASE_DIR', 'DATA_DIR', 'df', 'cleaned_df']
+
     def __init__(self):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.info("Initializing NLP_Model")
         
-        self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         self.DATA_DIR = os.path.join(self.BASE_DIR, "data", "Reviews.csv")
-        
+
         self.df = pd.read_csv(self.DATA_DIR)
         self.cleaned_df = self.clean_unnecessary()
         self.logger.info("NLP_Model initialized successfully")
 
-    def print_section(self, title: str) -> None:
+    @staticmethod
+    def print_section(title: str) -> None:
         """Prints a formatted section header"""
         line = "═" * 30
         print(Fore.CYAN + line + f" {title} " + line + Style.RESET_ALL)
