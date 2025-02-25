@@ -1,5 +1,5 @@
-from src.common_imports import *
-from src.logging_config import *
+from src.common_imports import * # noqa: F403, F405
+from src.logging_config import * # noqa: F403, F405
 
 class NlpModel:
     __slots__ = ['logger', 'BASE_DIR', 'DATA_DIR', 'df', 'cleaned_df']
