@@ -2,6 +2,7 @@ from src.common_imports import * # noqa: F403, F405
 from src.nlpmodel import NlpModel
 from src.logging_config import *  # noqa: F403, F405
 from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  
+from nltk.tokenize import word_tokenize
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -21,14 +22,13 @@ class PreprocessingModel(NlpModel):
         self.patterns = {
             'html': re.compile(r"<[^>]+>"),
             'url': re.compile(r"(https?|ftp):\/\/([\w_-]+(?:(?:\.[\w_-]+)+))([\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])"),
-            'emoji': re.compile(r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]"),
             'punctuation': re.compile(r"[!\'#\$%&\'\(\)\*\+,-\./:;<=>\?@\[\\\]\^_`{\|}~]"),
             'extra_punctuation': re.compile(r'(\W)\1+'),
             'whitespace': re.compile(r'\s+')
         }
         
         self.word_replacements = {**SLANG_DICT, **CONTRACTIONS_DICT}
-        
+    
     def _count_pattern_matches(self, pattern_name: str, df) -> tuple:
         self.logger.info("GETTING PATTERN MATCHES..")
         self.print_section("GETTING PATTERN MATCHES..")
@@ -38,7 +38,7 @@ class PreprocessingModel(NlpModel):
         count = mask.sum()
         percentage = 100 * count / len(self.df)
         return count, percentage
-
+    
     def get_statistics(self, df) -> None:
         """Efficiently calculate all statistics at once"""
         
@@ -50,7 +50,7 @@ class PreprocessingModel(NlpModel):
         table.add_column("Count", style="green")
         table.add_column("Percentage", style="yellow")
 
-        for pattern_name in ['html', 'url', 'emoji']:
+        for pattern_name in ['html', 'url']:
             count, percentage = self._count_pattern_matches(pattern_name, df)
             table.add_row(pattern_name, str(count), f"{percentage:.2f}%")
 
@@ -150,7 +150,7 @@ class PreprocessingModel(NlpModel):
             self.df['Tokens'] = tokenized_texts
             
             self.df = self.df[['Id', 'Score', 'Summary', 'Text', 'Tokens']]
-            
+    
     def save_to_csv(self, output_path: str = "processed_data.csv") -> None:
         """Save the processed DataFrame to CSV"""
         self.logger.info("SAVING TO CSV STARTED..")
