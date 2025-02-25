@@ -1,35 +1,13 @@
-import os
-import sys
-import re
-import timeit
-import warnings
-import numpy as np
-import pandas as pd
-from langdetect import detect
-from multiprocessing import get_context
-import emoji
-import cProfile 
-import pstats
-
-import nltk
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-
-from rich.console import Console
-from rich.table import Table
-from rich.progress import track
+from src.common_imports import * # noqa: F403, F405
+from src.nlpmodel import NlpModel
+from src.logging_config import *  # noqa: F403, F405
+from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from src.common_imports import * 
-from src.nlpmodel import NlpModel
-from src.logging_config import *  
-from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 console = Console()
-
 
 class PreprocessingModel(NlpModel):
     __slots__ = ["SAVE_DATA_DIR", "STATS_DIR", "df", "patterns", "word_replacements"]
