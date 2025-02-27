@@ -18,7 +18,13 @@ class TestPreprocessingModel:
                 'This is a <b>great</b> product! Check it at http://example.com 😊',
                 'The product was ok... but could be better :)',
                 'BAD product!!! Not worth the $$$'
-            ]
+            ],
+            'ProductId': 'PRODUCT-0001',
+            'UserId': 'USER-0001',
+            'ProfileName': 'tester-master-of-none',
+            'HelpfulnessNumerator': '5',
+            'HelpfulnessDenominator': '5',
+            'Time': 'break-time'
         })
 
     @pytest.fixture
