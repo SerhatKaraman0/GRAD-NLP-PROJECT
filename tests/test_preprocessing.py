@@ -108,3 +108,4 @@ class TestPreprocessingModel:
         loaded_df = pd.read_csv(test_file)
         assert len(loaded_df) == len(model.df)
         assert all(col in loaded_df.columns for col in model.df.columns)
+        
