@@ -195,8 +195,12 @@ class TestPreprocessingModel:
                 '',  # Empty text
                 '   ',  # Only whitespace
                 None,  # None value
-                '!!!!!!!'  # Only punctuation
-            ]
+                '!!!!!!!'  # Only 'ProductId': 'PRODUCT-0001',
+            'UserId': 'USER-0001',
+            'ProfileName': 'tester-master-of-none',
+            'HelpfulnessNumerator': '5',
+            'HelpfulnessDenominator': '5',
+            'Time': 'break-time'
         })
         
         model.df = edge_cases
@@ -214,7 +218,12 @@ class TestPreprocessingModel:
             'Id': range(1000),
             'Score': np.random.randint(1, 6, 1000),
             'Summary': ['Test'] * 1000,
-            'Text': ['This is test text ' * 10] * 1000
+            'Text': ['This is test text ' * 10] * 'ProductId': 'PRODUCT-0001',
+            'UserId': 'USER-0001',
+            'ProfileName': 'tester-master-of-none',
+            'HelpfulnessNumerator': '5',
+            'HelpfulnessDenominator': '5',
+            'Time': 'break-time'
         })
         
         model.df = large_df
