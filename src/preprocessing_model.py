@@ -149,7 +149,7 @@ class PreprocessingModel(NlpModel):
             self.df['Text'] = processed_texts
             self.df['Tokens'] = tokenized_texts
             
-            self.df = self.df[['Id', 'Score', 'Summary', 'Text', 'Tokens']]
+            
             
     def save_to_csv(self, output_path: str = "processed_data.csv") -> None:
         """Save the processed DataFrame to CSV"""
