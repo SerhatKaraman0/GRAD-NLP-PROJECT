@@ -8,6 +8,7 @@ show-stats-preprocessing: # shows performance stats of preprocessing class
 	tuna $(PWD)/stats/results.prof
 	
 run-preprocessing: # run preprocessing class functions
+	rm -f data/PREPROCESSED_Reviews.csv
 	python3 -m src.preprocessing_model
 
 setup: clean  # Set up project environment and install dependencies

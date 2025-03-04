@@ -2,6 +2,13 @@ from src.common_imports import * # noqa: F403, F405
 from src.nlpmodel import NlpModel
 from src.logging_config import *  # noqa: F403, F405
 from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  
+from nltk.tokenize import word_tokenize, sent_tokenize
+import gc
+import itertools
+from multiprocessing import get_context
+from nltk.corpus import stopwords
+import swifter
+from tqdm import tqdm
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -21,14 +28,13 @@ class PreprocessingModel(NlpModel):
         self.patterns = {
             'html': re.compile(r"<[^>]+>"),
             'url': re.compile(r"(https?|ftp):\/\/([\w_-]+(?:(?:\.[\w_-]+)+))([\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])"),
-            'emoji': re.compile(r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF]"),
             'punctuation': re.compile(r"[!\'#\$%&\'\(\)\*\+,-\./:;<=>\?@\[\\\]\^_`{\|}~]"),
             'extra_punctuation': re.compile(r'(\W)\1+'),
             'whitespace': re.compile(r'\s+')
         }
         
         self.word_replacements = {**SLANG_DICT, **CONTRACTIONS_DICT}
-        
+    
     def _count_pattern_matches(self, pattern_name: str, df) -> tuple:
         self.logger.info("GETTING PATTERN MATCHES..")
         self.print_section("GETTING PATTERN MATCHES..")
@@ -38,7 +44,7 @@ class PreprocessingModel(NlpModel):
         count = mask.sum()
         percentage = 100 * count / len(self.df)
         return count, percentage
-
+    
     def get_statistics(self, df) -> None:
         """Efficiently calculate all statistics at once"""
         
@@ -50,11 +56,33 @@ class PreprocessingModel(NlpModel):
         table.add_column("Count", style="green")
         table.add_column("Percentage", style="yellow")
 
-        for pattern_name in ['html', 'url', 'emoji']:
+        for pattern_name in ['html', 'url']:
             count, percentage = self._count_pattern_matches(pattern_name, df)
             table.add_row(pattern_name, str(count), f"{percentage:.2f}%")
 
         console.print(table)
+
+    def _process_text(self, text):
+        """Process a single text - for use with swifter"""
+        text = str(text).lower()
+        
+        converted_text = emoji.demojize(text)
+        converted_text = self.patterns['html'].sub('', converted_text)
+        converted_text = self.patterns['url'].sub('', converted_text)
+        converted_text = self.patterns['whitespace'].sub(' ', converted_text)
+        converted_text = self.patterns['extra_punctuation'].sub(r'\1', converted_text)
+        
+        sentences = sent_tokenize(' '.join(converted_text.split()))
+        
+        converted_text = self.patterns['punctuation'].sub('', converted_text)
+        
+        words = converted_text.split()
+        words = [self.word_replacements.get(word, word) for word in words]
+        processed_text = ' '.join(words)
+        
+        tokens = word_tokenize(processed_text)
+        
+        return processed_text, tokens, sentences
 
     @staticmethod
     def _process_chunk(args):
@@ -62,15 +90,15 @@ class PreprocessingModel(NlpModel):
         texts, patterns, word_replacements = args
 
         if len(texts) == 0:
-            return [], []  # Return empty lists for empty chunks
+            return [], [], []
 
-        # Convert texts to a pandas.Series if it's a list
         if isinstance(texts, list):
             texts = pd.Series(texts)
 
         processed = np.empty(len(texts), dtype=object)
         tokenized = np.empty(len(texts), dtype=object)
-        
+        sentence_tokenized = np.empty(len(texts), dtype=object)
+
         for i in range(len(texts)):
             text = str(texts.iloc[i]).lower() 
             
@@ -78,8 +106,11 @@ class PreprocessingModel(NlpModel):
             converted_text = patterns['html'].sub('', converted_text)
             converted_text = patterns['url'].sub('', converted_text)
             converted_text = patterns['whitespace'].sub(' ', converted_text)
-            converted_text = patterns['punctuation'].sub('', converted_text)
             converted_text = patterns['extra_punctuation'].sub(r'\1', converted_text)
+
+            sentence_tokenized[i] = sent_tokenize(' '.join(converted_text.split()))
+            
+            converted_text = patterns['punctuation'].sub('', converted_text)
             
             words = converted_text.split()
             words = [word_replacements.get(word, word) for word in words]
@@ -88,10 +119,10 @@ class PreprocessingModel(NlpModel):
             processed[i] = processed_text
             tokenized[i] = word_tokenize(processed_text)
             
-        return processed.tolist(), tokenized.tolist()
+        return processed.tolist(), tokenized.tolist(), sentence_tokenized.tolist()
 
     def remove_foreign_words(self) -> None:
-        """Remove non-English text efficiently"""
+        """Remove non-English text efficiently using swifter"""
         self.logger.info("REMOVING FOREIGN WORDS STARTED..") 
         self.print_section("REMOVING FOREIGN WORDS STARTED..") 
 
@@ -100,57 +131,71 @@ class PreprocessingModel(NlpModel):
                 return detect(str(text)) == 'en'
             except:
                 return False
-
-        chunk_size = 1000
-        mask = pd.Series(index=self.df.index, dtype=bool)
         
-        for start in range(0, len(self.df), chunk_size):
-            end = start + chunk_size
-            chunk = self.df['Text'].iloc[start:end]
-            mask.iloc[start:end] = chunk.apply(detect_language)
-            
-        self.df.loc[~mask, 'Text'] = ''
+        # Using swifter for parallelized language detection
+        is_english = self.df['Text'].swifter.apply(detect_language)
+        self.df.loc[~is_english, 'Text'] = ''
 
     def preprocess_dataframe(self) -> None:
-        """Main preprocessing pipeline with M1-compatible parallel processing"""
+        """Main preprocessing pipeline with swifter for parallelization"""
         self.logger.info("PREPROCESSING STARTED..")
         self.print_section("PREPROCESSING STARTED..")
-
+        
         if self.df.empty or self.df['Text'].empty:
             self.logger.error("DataFrame or 'Text' column is empty. Aborting preprocessing.")
             return
-
-        chunk_size = 1000
-        n_cores = os.cpu_count() or 4
         
-        chunks = np.array_split(self.df['Text'], len(self.df) // chunk_size + 1)
+        # Determine processing approach based on data size
+        if len(self.df) > 10000:  # For large datasets, use chunked approach
+            total_chars = self.df['Text'].str.len().sum()
+            chars_per_chunk = 500000  
+            n_chunks = max(1, int(total_chars / chars_per_chunk))
+            
+            n_cores = os.cpu_count() or 4
+            n_cores = min(n_cores, 8)
+            
+            chunks = np.array_split(self.df['Text'], n_chunks)
+            process_args = [(chunk, self.patterns, self.word_replacements) for chunk in chunks]
+            
+            with get_context('spawn').Pool(processes=n_cores) as pool:
+                results = list(track(
+                    pool.imap_unordered(self._process_chunk, process_args),
+                    total=len(process_args),
+                    description="Processing chunks..."
+                ))
+                
+                processed_chunks, tokenized_chunks, sentence_tokenized_chunks = zip(*results)
+                
+                processed_texts = list(itertools.chain.from_iterable(processed_chunks))
+                tokenized_texts = list(itertools.chain.from_iterable(tokenized_chunks))
+                sentence_tokenized_texts = list(itertools.chain.from_iterable(sentence_tokenized_chunks))
+                
+                del processed_chunks, tokenized_chunks, sentence_tokenized_chunks
+                gc.collect()
+        else:
+            # For smaller datasets, use swifter for parallelized apply
+            console.print("[bold yellow]Using swifter for parallel processing...[/bold yellow]")
+            
+            # Set swifter to use a progress bar
+            results = self.df['Text'].swifter.progress_bar(True).apply(self._process_text)
+            
+            # Unpack results
+            processed_texts, tokenized_texts, sentence_tokenized_texts = zip(*results)
         
-        process_args = [(chunk, self.patterns, self.word_replacements) for chunk in chunks]
+        # Create new DataFrame columns
+        new_data = {
+            'Text': processed_texts,
+            'Tokens': tokenized_texts,
+            'Sentences': sentence_tokenized_texts,
+            'Token_count': [len(tokens) for tokens in tokenized_texts],
+            'Sentence_count': [len(sentences) for sentences in sentence_tokenized_texts]
+        }
         
-        with get_context('spawn').Pool(processes=n_cores) as pool:
-            results = list(track(
-                pool.imap(self._process_chunk, process_args),
-                total=len(process_args),
-                description="Processing chunks..."
-            ))
+        self.df = self.df[['Id', 'Score', 'Summary']].assign(**new_data)
             
-            stop_words = set(stopwords.words('english'))
-            processed_chunks, tokenized_chunks = zip(*results)
-            
-            processed_texts = [text for chunk in processed_chunks for text in chunk]
+        # Final cleanup
+        gc.collect()
 
-            # Modified: Filter stop words from each token list
-            tokenized_texts = [
-                [token for token in token_list if token.lower() not in stop_words]
-                for chunk in tokenized_chunks 
-                for token_list in chunk
-            ]
-
-            self.df['Text'] = processed_texts
-            self.df['Tokens'] = tokenized_texts
-            
-            
-            
     def save_to_csv(self, output_path: str = "processed_data.csv") -> None:
         """Save the processed DataFrame to CSV"""
         self.logger.info("SAVING TO CSV STARTED..")
@@ -194,4 +239,3 @@ if __name__ == "__main__":
     results.sort_stats(pstats.SortKey.TIME)
 
     results.dump_stats(stats_file_dir)
-
