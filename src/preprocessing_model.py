@@ -9,6 +9,12 @@ from multiprocessing import get_context
 from nltk.corpus import stopwords
 import swifter
 from tqdm import tqdm
+import warnings
+
+warnings.simplefilter("ignore", UserWarning)
+warnings.simplefilter("ignore", FutureWarning)
+warnings.simplefilter("ignore", DeprecationWarning)
+
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -185,8 +191,6 @@ class PreprocessingModel(NlpModel):
         # Create new DataFrame columns
         new_data = {
             'Text': processed_texts,
-            'Tokens': tokenized_texts,
-            'Sentences': sentence_tokenized_texts,
             'Token_count': [len(tokens) for tokens in tokenized_texts],
             'Sentence_count': [len(sentences) for sentences in sentence_tokenized_texts]
         }
