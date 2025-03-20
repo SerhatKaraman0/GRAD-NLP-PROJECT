@@ -12,6 +12,9 @@ from tqdm import tqdm
 import string 
 from textblob import TextBlob
 from bs4 import BeautifulSoup
+import nltk 
+nltk.download('stopwords')
+nltk.download('punkt_tab')
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 

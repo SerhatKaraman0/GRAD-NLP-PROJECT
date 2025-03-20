@@ -66,15 +66,22 @@ class FeatureEngineering(NlpModel):
         # Ensure NaN values are handled
         self.df['Text'] = self.df['Text'].fillna('')
         
-        # Initialize CountVectorizer
-        self.vectorizer = CountVectorizer()
+        # Initialize CountVectorizer with more aggressive feature reduction
+        self.vectorizer = CountVectorizer(
+            min_df=5,            # Ignore terms that appear in less than 5 documents
+            max_df=0.5,          # Ignore terms that appear in more than 50% of documents
+            max_features=10000   # Only keep top 10,000 features
+        )
         
         self.vectorizer.fit(self.df['Text'])
 
         sparse_matrices = []
 
-        for i in track(range(0, 50_000, self.batch_size), description="Processing batches"):
-            batch = self.df.iloc[i:i+self.batch_size]['Text']
+        # Process in smaller batches to reduce memory usage
+        batch_size = min(5000, self.batch_size)  # Use smaller batches if needed
+        
+        for i in track(range(0, len(self.df), batch_size), description="Processing batches"):
+            batch = self.df.iloc[i:i+batch_size]['Text']
             batch_matrix = self.vectorizer.transform(batch)
             sparse_matrices.append(batch_matrix)
             gc.collect()
@@ -87,7 +94,6 @@ class FeatureEngineering(NlpModel):
         self.bow_df = bow_df  
 
         return bow_df
-    
 
 
 
@@ -96,14 +102,21 @@ class FeatureEngineering(NlpModel):
         self.logger.info("SAVING TO PARQUET STARTED..")
         self.print_section("SAVING TO PARQUET STARTED..")
 
+     # Check if DataFrame has sparse data
+        has_sparse = hasattr(df, 'sparse') and hasattr(df.sparse, 'to_dense')
+    
+        if has_sparse:
         # Convert sparse DataFrame to dense
-        dense_bow_df = df.sparse.to_dense()
-        
+            dense_df = df.sparse.to_dense()
+        else:
+            self.logger.warning("Input DataFrame does not contain sparse data.")
+            dense_df = df
+    
         # Ensure the output directory exists
         os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
-        
+    
         # Save to Parquet format with gzip compression
-        dense_bow_df.to_parquet(f"{output_path}.parquet.gz", compression="gzip")
+        dense_df.to_parquet(f"{output_path}.parquet.gz", compression="gzip")
 
         self.logger.info(f"DF SAVED TO {output_path}.parquet.gz")
 
@@ -119,7 +132,7 @@ if __name__ == "__main__":
     
     OUTPUT_DIR = os.path.join(model.SAVE_DATA_DIR, "bag_of_words", "bag_of_words")
 
-    model.word_freq()
+    model.save_to_parquet(model.df, OUTPUT_DIR)
 
 
 
