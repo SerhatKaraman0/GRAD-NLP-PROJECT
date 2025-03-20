@@ -145,6 +145,11 @@ class PreprocessingModel(NlpModel):
         
         converted_text = ' '.join(converted_text.split())
         
+        # Remove stopwords
+        stop_words = set(stopwords.words('english'))
+
+        converted_text = " ".join([word for word in converted_text.split() if word not in stop_words])
+        
         return converted_text
 
     @staticmethod

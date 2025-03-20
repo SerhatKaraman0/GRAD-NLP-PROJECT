@@ -11,6 +11,10 @@ run-preprocessing: # run preprocessing class functions
 	rm -f data/PREPROCESSED_Reviews.csv
 	python3 -m src.preprocessing_model
 
+run-feature_eng: # run feature engineering class functions
+	rm -f data/bag_of_words.csv
+	python3 -m src.feature_engineering
+
 setup: clean  # Set up project environment and install dependencies
 	python3 -m venv venv
 	. venv/bin/activate && \
