@@ -9,6 +9,9 @@ from multiprocessing import get_context
 from nltk.corpus import stopwords
 import swifter
 from tqdm import tqdm
+import string 
+from textblob import TextBlob
+from bs4 import BeautifulSoup
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -26,11 +29,12 @@ class PreprocessingModel(NlpModel):
         self.df = self.cleaned_df.copy()  
 
         self.patterns = {
-            'html': re.compile(r"<[^>]+>"),
             'url': re.compile(r"(https?|ftp):\/\/([\w_-]+(?:(?:\.[\w_-]+)+))([\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])"),
             'punctuation': re.compile(r"[!\'#\$%&\'\(\)\*\+,-\./:;<=>\?@\[\\\]\^_`{\|}~]"),
             'extra_punctuation': re.compile(r'(\W)\1+'),
-            'whitespace': re.compile(r'\s+')
+            'special_characters': re.compile(r"[^a-zA-Z0-9\s]"),
+            'numbers': re.compile(r"^\d+"),
+            'special_chars': re.compile(r"[^\w\s]")
         }
         
         self.word_replacements = {**SLANG_DICT, **CONTRACTIONS_DICT}
@@ -56,7 +60,7 @@ class PreprocessingModel(NlpModel):
         table.add_column("Count", style="green")
         table.add_column("Percentage", style="yellow")
 
-        for pattern_name in ['html', 'url']:
+        for pattern_name in self.patterns.keys():
             count, percentage = self._count_pattern_matches(pattern_name, df)
             table.add_row(pattern_name, str(count), f"{percentage:.2f}%")
 
@@ -64,17 +68,18 @@ class PreprocessingModel(NlpModel):
 
     def _process_text(self, text):
         """Process a single text - for use with swifter"""
+        
         text = str(text).lower()
         
         converted_text = emoji.demojize(text)
+        converted_text = " ".join(text.split())
+
+        converted_text = converted_text.translate(str.maketrans(' ', ' ', string.punctuation))
+        converted_text = self.patterns['special_characters'].sub('', converted_text)
         converted_text = self.patterns['html'].sub('', converted_text)
         converted_text = self.patterns['url'].sub('', converted_text)
-        converted_text = self.patterns['whitespace'].sub(' ', converted_text)
-        converted_text = self.patterns['extra_punctuation'].sub(r'\1', converted_text)
         
         sentences = sent_tokenize(' '.join(converted_text.split()))
-        
-        converted_text = self.patterns['punctuation'].sub('', converted_text)
         
         words = converted_text.split()
         words = [self.word_replacements.get(word, word) for word in words]
@@ -87,39 +92,73 @@ class PreprocessingModel(NlpModel):
     @staticmethod
     def _process_chunk(args):
         """Process a chunk of texts in parallel using numpy for loop"""
+        
         texts, patterns, word_replacements = args
-
         if len(texts) == 0:
             return [], [], []
-
+        
         if isinstance(texts, list):
             texts = pd.Series(texts)
-
+        
         processed = np.empty(len(texts), dtype=object)
         tokenized = np.empty(len(texts), dtype=object)
         sentence_tokenized = np.empty(len(texts), dtype=object)
-
+        
         for i in range(len(texts)):
-            text = str(texts.iloc[i]).lower() 
+            text = str(texts.iloc[i]).lower()
             
-            converted_text = emoji.demojize(text)
-            converted_text = patterns['html'].sub('', converted_text)
-            converted_text = patterns['url'].sub('', converted_text)
-            converted_text = patterns['whitespace'].sub(' ', converted_text)
-            converted_text = patterns['extra_punctuation'].sub(r'\1', converted_text)
-
-            sentence_tokenized[i] = sent_tokenize(' '.join(converted_text.split()))
+            # Clean and preprocess text
+            converted_text = PreprocessingModel._clean_text(text, patterns)
+            processed[i] = PreprocessingModel._replace_words(converted_text, word_replacements)
             
-            converted_text = patterns['punctuation'].sub('', converted_text)
-            
-            words = converted_text.split()
-            words = [word_replacements.get(word, word) for word in words]
-            processed_text = ' '.join(words)
-            
-            processed[i] = processed_text
-            tokenized[i] = word_tokenize(processed_text)
+            # Tokenize using the optimized function
+            tokenized[i], sentence_tokenized[i] = PreprocessingModel._tokenize_text(processed[i])
             
         return processed.tolist(), tokenized.tolist(), sentence_tokenized.tolist()
+   
+    @staticmethod
+    def _replace_words(text, word_replacements):
+        """Replace words using the replacement dictionary"""
+        words = text.split()
+        words = [word_replacements.get(word, word) for word in words]
+        return ' '.join(words)
+   
+    @staticmethod
+    def _clean_text(text, patterns):
+        """Clean and preprocess text"""
+        converted_text = emoji.demojize(text)
+        
+        converted_text = " ".join(text.split())
+        
+        converted_text = " ".join([word for word in text.split() if len(word) > 2])
+        
+        converted_text = patterns['numbers'].sub('', converted_text)
+        
+        converted_text = converted_text.translate(str.maketrans(' ', ' ', string.punctuation))
+        
+        converted_text = patterns['special_chars'].sub('', converted_text)
+        converted_text = patterns['special_characters'].sub('', converted_text)
+        
+        converted_text = BeautifulSoup(converted_text, "html.parser").get_text()
+        
+        converted_text = patterns['url'].sub('', converted_text)
+        
+        converted_text = ' '.join(converted_text.split())
+        
+        # Remove stopwords
+        stop_words = set(stopwords.words('english'))
+
+        converted_text = " ".join([word for word in converted_text.split() if word not in stop_words])
+        
+        return converted_text
+
+    @staticmethod
+    def _tokenize_text(text):
+        """Tokenize text into words and sentences"""
+        word_tokens = word_tokenize(text)
+        sentence_tokens = sent_tokenize(text)
+        
+        return word_tokens, sentence_tokens
 
     def remove_foreign_words(self) -> None:
         """Remove non-English text efficiently using swifter"""
@@ -136,8 +175,18 @@ class PreprocessingModel(NlpModel):
         is_english = self.df['Text'].swifter.apply(detect_language)
         self.df.loc[~is_english, 'Text'] = ''
 
+    @staticmethod
+    def process_with_timeout(args):
+        """Wrapper function with timeout handling"""
+        try:
+            return PreprocessingModel._process_chunk(args)
+        except Exception as e:
+            print(f"Error in worker process: {e}")
+            return [], [], [] 
+        
     def preprocess_dataframe(self) -> None:
         """Main preprocessing pipeline with swifter for parallelization"""
+        from concurrent.futures import ProcessPoolExecutor
         self.logger.info("PREPROCESSING STARTED..")
         self.print_section("PREPROCESSING STARTED..")
         
@@ -157,20 +206,32 @@ class PreprocessingModel(NlpModel):
             chunks = np.array_split(self.df['Text'], n_chunks)
             process_args = [(chunk, self.patterns, self.word_replacements) for chunk in chunks]
             
-            with get_context('spawn').Pool(processes=n_cores) as pool:
-                results = list(track(
-                    pool.imap_unordered(self._process_chunk, process_args),
-                    total=len(process_args),
-                    description="Processing chunks..."
-                ))
+            with ProcessPoolExecutor(max_workers=n_cores) as executor:
+                # Create futures with map (more efficient than submitting individual tasks)
+                futures = []
+                for args in process_args:
+                    futures.append(executor.submit(PreprocessingModel.process_with_timeout, args))
                 
-                processed_chunks, tokenized_chunks, sentence_tokenized_chunks = zip(*results)
+                # Process results as they complete
+                processed_texts = []
+                tokenized_texts = []
+                sentence_tokenized_texts = []
                 
-                processed_texts = list(itertools.chain.from_iterable(processed_chunks))
-                tokenized_texts = list(itertools.chain.from_iterable(tokenized_chunks))
-                sentence_tokenized_texts = list(itertools.chain.from_iterable(sentence_tokenized_chunks))
+                for future in track(futures, description="Processing chunks..."):
+                    try:
+                        # Add a timeout to prevent hanging processes
+                        result = future.result(timeout=200)  
+                        if result and all(result):
+                            proc_chunk, token_chunk, sent_chunk = result
+                            processed_texts.extend(proc_chunk)
+                            tokenized_texts.extend(token_chunk)
+                            sentence_tokenized_texts.extend(sent_chunk)
+                    except TimeoutError:
+                        print("A worker process timed out and will be skipped")
+                    except Exception as e:
+                        print(f"Error processing chunk: {e}")
                 
-                del processed_chunks, tokenized_chunks, sentence_tokenized_chunks
+                # Force garbage collection
                 gc.collect()
         else:
             # For smaller datasets, use swifter for parallelized apply
