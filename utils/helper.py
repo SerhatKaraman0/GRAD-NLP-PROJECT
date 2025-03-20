@@ -141,6 +141,7 @@ SLANG_DICT = {
     "aymm" : "are you my mother",
     "ayor" : "at your own risk", 
     "b&b" : "bed and breakfast",
+    "br" : "best-regards",
     "b+b" : "bed and breakfast",
     "b.c" : "before christ",
     "b2b" : "business to business",
