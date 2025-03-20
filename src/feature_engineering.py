@@ -7,7 +7,8 @@ from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk.corpus import stopwords
 import swifter
 
-from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+
 
 from scipy import sparse
 
@@ -40,24 +41,55 @@ class FeatureEngineering(NlpModel):
 
             self.vectorizer = CountVectorizer()
 
+
     def word_freq(self):
-        X = self.vectorizer.fit_transform(self.df['Text'])
-        
-        word_counts = X.sum(axis=0).A1
-        feature_names = self.vectorizer.get_feature_names_out() 
-        
-        freq = dict(zip(feature_names, word_counts))
-        
-        sorted_freq = sorted(freq.items(), key=lambda item: item[1], reverse=True)
+        from collections import Counter
+        import seaborn as sns
+        import matplotlib.pyplot as plt
 
-        # Convert to DataFrame for plotting
-        freq_df = pd.DataFrame(sorted_freq[:10], columns=['Word', 'Frequency'])
+        all_words = ' '.join(self.df['Text']).split()
+        word_counts = Counter(all_words)
+        
+        common_words = word_counts.most_common(20)
+        words, counts = zip(*common_words)
 
-        sns.barplot(x='Word', y='Frequency', data=freq_df)
+        plt.figure(figsize=(12, 6))
+        sns.barplot(x=list(words), y=list(counts), palette="viridis")
         plt.xticks(rotation=45)
+        plt.title("Top 20 Most Common Words")
+        plt.xlabel("Words")
+        plt.ylabel("Frequency")
+        plt.tight_layout()
         plt.show()
         
+    def _vectorize_tfidf(self):
+        # Ensure NaN values are handled
+        self.df['Text'] = self.df['Text'].fillna('')
+
+        tfidf_vectorizer = TfidfVectorizer()
+        X = tfidf_vectorizer.fit_transform(self.df["Text"])
+
+        feature_names = tfidf_vectorizer.get_feature_names_out()
+        tfidf_score = X.mean(axis=0).A1
+
+        df_tfidf = pd.DataFrame({
+                                "word": feature_names,
+                                "score": tfidf_score
+                                }) 
         
+        sorted_df = df_tfidf.sort_values(by="score", ascending=False)
+
+        plt.figure(figsize=(12, 6))
+        sns.barplot(x=list(sorted_df[:20]["word"]), y=list(sorted_df[:20]["score"]), palette="viridis")
+        plt.xticks(rotation=45)
+        plt.title("Top 20 Words by TF-IDF Score")
+        plt.xlabel("Words")
+        plt.ylabel("TF-IDF Score")
+        plt.tight_layout()
+        plt.show()
+
+        return sorted_df
+    
 
     def create_bow(self):
         """For creating the bag of words from preprocessed data and saving the result into a DataFrame"""
@@ -90,7 +122,6 @@ class FeatureEngineering(NlpModel):
     
 
 
-
     def save_to_parquet(self, df, output_path: str = "processed_data.parquet") -> None:
         """Save the processed DataFrame to Parquet with gzip compression"""
         self.logger.info("SAVING TO PARQUET STARTED..")
@@ -110,16 +141,26 @@ class FeatureEngineering(NlpModel):
         return output_path
 
 
-       
+    def read_parquet(self, df, input_path: str):
+        data = pd.read_parquet(input_path)
+        print(data.head())
+        print(data.count)
+
 
 
 if __name__ == "__main__":
     model = FeatureEngineering()
-    bag_of_words_df = model.create_bow()
     
-    OUTPUT_DIR = os.path.join(model.SAVE_DATA_DIR, "bag_of_words", "bag_of_words")
+    OUTPUT_DIR = os.path.join(model.SAVE_DATA_DIR, "bag_of_words", "bag_of_words.parquet.gz")
 
-    model.word_freq()
+    tfidf_df = model._vectorize_tfidf()
+
+    tfidf_output_path = os.path.join(model.SAVE_DATA_DIR, "tfidf_scores.csv")
+    tfidf_df.to_csv(tfidf_output_path, index=False)
+    
+    print(f"TF-IDF scores saved to {tfidf_output_path}")
+    
+
 
 
 
