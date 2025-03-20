@@ -119,3 +119,4 @@ vendor/
 
 stats/
 data/PREPROCESSED_Reviews.csv
+data/tokenized_data.csv
