@@ -120,3 +120,5 @@ vendor/
 stats/
 data/PREPROCESSED_Reviews.csv
 data/tokenized_data.csv
+data/bag_of_words/bag_of_words.parquet.gz
+data/tfidf_scores.csv
