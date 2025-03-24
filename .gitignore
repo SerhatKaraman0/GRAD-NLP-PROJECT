@@ -21,6 +21,8 @@ build/
 .vite/
 *.log
 *.tsbuildinfo
+bag_of_words/
+notebook/
 
 # Environment and secrets
 .env
