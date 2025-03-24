@@ -128,26 +128,23 @@ class PreprocessingModel(NlpModel):
         """Clean and preprocess text"""
         converted_text = emoji.demojize(text)
         
-        converted_text = " ".join(text.split())
-        
-        converted_text = " ".join([word for word in text.split() if len(word) > 2])
-        
-        converted_text = patterns['numbers'].sub('', converted_text)
-        
-        converted_text = converted_text.translate(str.maketrans(' ', ' ', string.punctuation))
-        
-        converted_text = patterns['special_chars'].sub('', converted_text)
-        converted_text = patterns['special_characters'].sub('', converted_text)
-        
         converted_text = BeautifulSoup(converted_text, "html.parser").get_text()
         
         converted_text = patterns['url'].sub('', converted_text)
         
-        converted_text = ' '.join(converted_text.split())
+        converted_text = patterns['numbers'].sub('', converted_text)
+        
+        converted_text = patterns['special_chars'].sub('', converted_text)
+        converted_text = patterns['special_characters'].sub('', converted_text)
+        
+        converted_text = converted_text.translate(str.maketrans(' ', ' ', string.punctuation))
+        
+        converted_text = " ".join([word for word in converted_text.split() if len(word) > 2])
+        
+        converted_text = " ".join(converted_text.split())
         
         # Remove stopwords
         stop_words = set(stopwords.words('english'))
-
         converted_text = " ".join([word for word in converted_text.split() if word not in stop_words])
         
         return converted_text
