@@ -34,9 +34,12 @@ import io
 import base64
 
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Input
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Dense, Dropout, Input, BatchNormalization, Conv1D, MaxPooling1D, LSTM, Bidirectional, GlobalMaxPooling1D, concatenate, Layer, Reshape
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import backend as K
 
 # To ensure compatibility across environments
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -47,6 +50,33 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+class AttentionLayer(Layer):
+    """
+    Attention layer for focusing on important parts of the input sequence.
+    """
+    def __init__(self, **kwargs):
+        super(AttentionLayer, self).__init__(**kwargs)
+        
+    def build(self, input_shape):
+        self.W = self.add_weight(name='attention_weight',
+                                shape=(input_shape[-1], 1),
+                                initializer='random_normal',
+                                trainable=True)
+        super(AttentionLayer, self).build(input_shape)
+        
+    def call(self, x):
+        # Calculate attention scores
+        e = K.tanh(K.dot(x, self.W))
+        a = K.softmax(e, axis=1)
+        
+        # Apply attention weights to input
+        output = x * a
+        
+        return output, a
+    
+    def compute_output_shape(self, input_shape):
+        return input_shape, (input_shape[0], input_shape[1], 1)
 
 class FeatureEngineering(NlpModel):
     def __init__(self, batch_size=10_000, max_features=7000):
@@ -149,112 +179,129 @@ class FeatureEngineering(NlpModel):
 
     def build_model(self, input_dim):
         """
-        Build a neural network model for sentiment analysis.
+        Build a model with three parallel paths using embeddings and LSTM layers.
         
         Args:
             input_dim: Dimension of the input features
             
         Returns:
-            tf.keras.models.Sequential: Compiled Keras model
+            tf.keras.models.Model: Compiled Keras model
         """
-        logger.info(f"Building model with input dimension {input_dim}")
+        logger.info(f"Building multi-path model with input dimension {input_dim}")
         
-        # Set up for mixed precision training for better performance on compatible GPUs
-        try:
-            policy = tf.keras.mixed_precision.Policy('mixed_float16')
-            tf.keras.mixed_precision.set_global_policy(policy)
-            logger.info("Using mixed precision training")
-        except:
-            logger.info("Mixed precision not available, using default precision")
+        # First path
+        input_1 = Input(shape=(input_dim,), name='embedding_1_input')
+        embedding_1 = Dense(1000, activation='relu', name='embedding_1_dense')(input_1)
+        embedding_1_reshaped = Reshape((1000, 1))(embedding_1)
+        lstm_1 = LSTM(100, name='lstm_1')(embedding_1_reshaped)
+        output_1 = Dense(1, name='dense_1')(lstm_1)
         
-        # Model architecture (Dense Feedforward Network)
-        model = Sequential([
-            Input(shape=(input_dim,)),
-            Dense(512, activation='relu', kernel_initializer='he_normal'),
-            Dropout(0.3),
-            Dense(256, activation='relu', kernel_initializer='he_normal'),
-            Dense(1, activation='linear')  # Regression for rating prediction
-        ])
+        # Second path
+        input_2 = Input(shape=(input_dim,), name='embedding_2_input')
+        embedding_2 = Dense(1000, activation='relu', name='embedding_2_dense')(input_2)
+        embedding_2_reshaped = Reshape((1000, 1))(embedding_2)
+        lstm_2 = LSTM(100, name='lstm_2')(embedding_2_reshaped)
+        dropout_1 = Dropout(0.2, name='dropout_1')(lstm_2)
+        dense_2 = Dense(128, activation='relu', name='dense_2')(dropout_1)
+        dropout_2 = Dropout(0.2, name='dropout_2')(dense_2)
+        dense_3 = Dense(64, activation='relu', name='dense_3')(dropout_2)
+        dropout_3 = Dropout(0.2, name='dropout_3')(dense_3)
+        output_2 = Dense(1, name='dense_4')(dropout_3)
         
-        # Use Adam optimizer with learning rate scheduling
-        optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+        # Third path
+        input_3 = Input(shape=(input_dim,), name='embedding_3_input')
+        embedding_3 = Dense(1000, activation='relu', name='embedding_3_dense')(input_3)
+        embedding_3_reshaped = Reshape((1000, 1))(embedding_3)
+        lstm_3 = LSTM(100, return_sequences=True, name='lstm_3')(embedding_3_reshaped)
+        lstm_4 = LSTM(100, name='lstm_4')(lstm_3)
+        output_3 = Dense(1, name='dense_5')(lstm_4)
         
+        # Combine all outputs
+        combined_output = concatenate([output_1, output_2, output_3])
+        final_output = Dense(1, activation='linear', name='final_output')(combined_output)
+        
+        # Create model with multiple inputs and one output
+        model = Model(
+            inputs=[input_1, input_2, input_3],
+            outputs=final_output
+        )
+        
+        # Custom accuracy metric with improved stability
+        def accuracy_metric(y_true, y_pred):
+            y_true_rounded = tf.round(y_true)
+            y_pred_rounded = tf.round(y_pred)
+            y_true_rounded = tf.cast(y_true_rounded, tf.int32)
+            y_pred_rounded = tf.cast(y_pred_rounded, tf.int32)
+            # Clip predictions to valid range
+            y_pred_rounded = tf.clip_by_value(y_pred_rounded, 1, 5)
+            return tf.reduce_mean(tf.cast(tf.equal(y_true_rounded, y_pred_rounded), tf.float32))
+        
+        # Compile model with Adam optimizer and gradient clipping
+        optimizer = Adam(learning_rate=0.001, clipnorm=1.0)
         model.compile(
-            optimizer=optimizer, 
-            loss='mse',  # Mean squared error for regression
-            metrics=['mae']  # Mean absolute error
+            optimizer=optimizer,
+            loss='mse',
+            metrics=['mae', accuracy_metric]
         )
         
         return model
 
     def train_model(self, X, y):
         """
-        Train a model on the TF-IDF matrix and visualize training metrics.
+        Train the model with multiple inputs.
         
         Args:
             X: Training features
             y: Target values
             
         Returns:
-            tf.keras.models.Sequential: Trained model
+            tf.keras.models.Model: Trained model
         """
         # Build the model
         model = self.build_model(X.shape[1])
         
-        # Set up callbacks for training
+        # Prepare inputs (same input data for all three paths)
+        X_inputs = [X, X, X]
+        
+        # Enhanced callbacks for training
         callbacks = [
             EarlyStopping(
-                monitor='val_loss',
-                patience=3,
+                monitor='val_accuracy_metric',
+                patience=10,
                 restore_best_weights=True,
+                mode='max',
                 verbose=1
             ),
             ModelCheckpoint(
                 os.path.join(self.SAVE_DATA_DIR, "sentiment_model_best.h5"),
-                monitor='val_loss',
+                monitor='val_accuracy_metric',
                 save_best_only=True,
+                mode='max',
                 verbose=1
             ),
-            # Add learning rate reduction on plateau
             tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='val_loss',
+                monitor='val_accuracy_metric',
                 factor=0.5,
-                patience=2,
-                min_lr=0.00001,
+                patience=5,
+                min_lr=0.000001,
+                mode='max',
                 verbose=1
+            ),
+            tf.keras.callbacks.TensorBoard(
+                log_dir=os.path.join(self.SAVE_DATA_DIR, "logs"),
+                histogram_freq=1
             )
         ]
         
-        # Add custom callback to track learning rate only if not using mixed precision
-        try:
-            # For standard optimizers
-            if hasattr(model.optimizer, 'lr'):
-                callbacks.append(
-                    tf.keras.callbacks.LambdaCallback(
-                        on_epoch_end=lambda epoch, logs: logs.update({'lr': float(model.optimizer.lr.numpy())})
-                    )
-                )
-            # For LossScaleOptimizer (mixed precision)
-            elif hasattr(model.optimizer, '_optimizer') and hasattr(model.optimizer._optimizer, 'lr'):
-                callbacks.append(
-                    tf.keras.callbacks.LambdaCallback(
-                        on_epoch_end=lambda epoch, logs: logs.update({'lr': float(model.optimizer._optimizer.lr.numpy())})
-                    )
-                )
-            else:
-                logger.warning("Could not access learning rate for tracking")
-        except Exception as e:
-            logger.warning(f"Error setting up learning rate tracking: {e}")
-        
-        # Train the model with batching for memory efficiency
+        # Train the model
         logger.info("Starting model training")
         history = model.fit(
-            X, y,
-            epochs=10,
-            batch_size=512,
+            X_inputs, y,
+            epochs=20,  # Reduced epochs due to more complex model
+            batch_size=32,  # Smaller batch size for better generalization
             validation_split=0.2,
             callbacks=callbacks,
-            verbose=2  # Less verbose output
+            verbose=2
         )
         
         logger.info("Model training completed")
@@ -266,7 +313,7 @@ class FeatureEngineering(NlpModel):
 
     def evaluate_model(self, model, X_test, y_test):
         """
-        Evaluate the model on the test set and visualize results.
+        Evaluate the model on the test set.
         
         Args:
             model: Trained model
@@ -276,12 +323,15 @@ class FeatureEngineering(NlpModel):
         Returns:
             tuple: (loss, mean absolute error, predicted values)
         """
+        # Prepare test inputs
+        X_test_inputs = [X_test, X_test, X_test]
+        
         logger.info("Evaluating model on test data")
-        loss, mae = model.evaluate(X_test, y_test, verbose=0)
+        loss, mae = model.evaluate(X_test_inputs, y_test, verbose=0)
         logger.info(f"Model evaluation: Loss={loss:.4f}, MAE={mae:.4f}")
         
         # Get predictions
-        y_pred = model.predict(X_test, verbose=0).flatten()
+        y_pred = model.predict(X_test_inputs, verbose=0).flatten()
         
         # Create metrics directory if it doesn't exist
         metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
@@ -423,6 +473,9 @@ class FeatureEngineering(NlpModel):
         
         # Cap to valid range
         y_pred_rounded = np.clip(y_pred_rounded, 1, 5)
+        
+        # Calculate accuracy
+        accuracy = accuracy_score(y_test_rounded, y_pred_rounded)
         
         # Create a confusion matrix
         conf_matrix = confusion_matrix(y_test_rounded, y_pred_rounded)
@@ -569,6 +622,11 @@ class FeatureEngineering(NlpModel):
                 <div class="metric-box">
                     <h2>Key Performance Metrics</h2>
                     <div class="metrics-container">
+                        <div class="metric-item" style="background-color: #e8f4f8; border: 2px solid #4a86e8;">
+                            <h3>Accuracy</h3>
+                            <div class="metric-value" style="color: #2b579a; font-size: 32px;">{accuracy:.4f}</div>
+                            <p>Classification Accuracy</p>
+                        </div>
                         <div class="metric-item">
                             <h3>MAE</h3>
                             <div class="metric-value">{mae:.4f}</div>
@@ -610,7 +668,7 @@ class FeatureEngineering(NlpModel):
                 <div class="metric-box">
                     <h2>Model Information</h2>
                     <p><strong>Features:</strong> {model.input_shape[1]} TF-IDF features</p>
-                    <p><strong>Architecture:</strong> {model.input_shape[1]} → 512 → 256 → 1</p>
+                    <p><strong>Architecture:</strong> {model.input_shape[1]} → 1000 → 100 → 128 → 64 → 1</p>
                     <p><strong>Test Set Size:</strong> {len(y_test)} samples</p>
                     <p><strong>Generated:</strong> {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
@@ -744,52 +802,6 @@ def main():
         # Evaluate the model with comprehensive metrics
         loss, mae, y_pred = model.evaluate_model(trained_model, X_test, y_test)
 
-        
-        # Create interactive dashboard
-        dashboard_path = model.build_interactive_dashboard(
-            trained_model, X_test, y_test, y_pred
-        )
-        logger.info(f"Interactive dashboard created at: {dashboard_path}")
-        
-        # Save the model
-        model_path = os.path.join(model.SAVE_DATA_DIR, "sentiment_model_final.h5")
-        trained_model.save(model_path)
-        logger.info(f"Model saved to {model_path}")
-        
-        # Save feature importance
-        top_features = model.save_feature_importance(trained_model)
-        logger.info(f"Top features:\n{top_features}")
-        
-    except Exception as e:
-        logger.error(f"Error in processing: {e}", exc_info=True)
-        raise
-
-
-
-def main():
-    """Main execution function."""
-    # Enable memory growth for GPU if available
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        try:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logger.info(f"GPU(s) detected: {len(gpus)}")
-        except Exception as e:
-            logger.warning(f"Error setting GPU memory growth: {e}")
-    
-    # Initialize FeatureEngineering class
-    model = FeatureEngineering(batch_size=10_000, max_features=7000)
-    
-    try:
-        # Load data and process TF-IDF
-        X_train, y_train, X_test, y_test = model.load_and_process_data()
-        
-        # Train the model
-        trained_model = model.train_model(X_train, y_train)
-        
-        # Evaluate the model with comprehensive metrics
-        loss, mae, y_pred = model.evaluate_model(trained_model, X_test, y_test)
         
         # Create interactive dashboard
         dashboard_path = model.build_interactive_dashboard(
