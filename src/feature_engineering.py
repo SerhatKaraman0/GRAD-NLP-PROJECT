@@ -1,7 +1,8 @@
 from src.common_imports import *  # noqa: F403, F405
 from src.nlpmodel import NlpModel
 from src.logging_config import *  # noqa: F403, F405
-from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  
+from utils.helper import CONTRACTIONS_DICT, SLANG_DICT
+from src.models import SimpleLSTMModel, DeepLSTMModel, StackedLSTMModel, EnsembleModel
 
 import numpy as np
 import pandas as pd
@@ -26,12 +27,6 @@ from nltk.corpus import stopwords
 from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_score, recall_score
-from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error, r2_score
-import matplotlib.pyplot as plt
-import seaborn as sns
-import io
-import base64
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
@@ -157,13 +152,7 @@ class TimeEstimator(Callback):
 
 class FeatureEngineering(NlpModel):
     def __init__(self, batch_size=10_000, max_features=7000):
-        """
-        Initialize paths and load dataset.
-        
-        Args:
-            batch_size: Size of batches for processing
-            max_features: Maximum number of features for TF-IDF vectorizer
-        """
+        """Initialize paths and load dataset."""
         super().__init__()
         self.SAVE_DATA_DIR = os.path.join(self.BASE_DIR, "data")
         self.PREPROCESSED_DATA_PATH = os.path.join(self.SAVE_DATA_DIR, "PREPROCESSED_Reviews.csv")
@@ -172,88 +161,12 @@ class FeatureEngineering(NlpModel):
             stop_words='english', 
             max_features=2000,  # Reduced from 7000
             lowercase=True,
-            sublinear_tf=True  # Apply sublinear tf scaling (1 + log(tf))
+            sublinear_tf=True
         )
-        
-        # Defer dataframe loading to when it's needed
         self.df = None
         self.df_size = None
         self.n_batches = None
-
-    def load_data(self):
-        """Load data from file and initialize related properties."""
-        logger.info(f"Loading data from {self.PREPROCESSED_DATA_PATH}")
-        # Use low_memory=False to avoid mixed type inference warnings
-        self.df = pd.read_csv(self.PREPROCESSED_DATA_PATH, low_memory=False)
-        self.df_size = len(self.df)
-        self.n_batches = (self.df_size + self.batch_size - 1) // self.batch_size
-        logger.info(f"Data loaded: {self.df_size} records, {self.n_batches} batches")
         
-    def preprocess_text(self):
-        """Preprocess text data by handling NaNs."""
-        if self.df is None:
-            self.load_data()
-        logger.info("Preprocessing text data")
-        # Fill missing values with empty string (more efficient than fillna)
-        self.df['Text'] = self.df['Text'].fillna('', inplace=False)
-
-    def _vectorize_tfidf_batch(self, start_idx, end_idx, fit=False):
-        """
-        Vectorize a batch of data using TF-IDF.
-        
-        Args:
-            start_idx: Starting index of the batch
-            end_idx: Ending index of the batch
-            fit: Whether to fit the vectorizer on this batch
-            
-        Returns:
-            tuple: (TF-IDF sparse matrix, updated fit flag)
-        """
-        batch = self.df.iloc[start_idx:end_idx]['Text']
-        
-        if fit:
-            # Only fit on first batch
-            batch_tfidf = self.vectorizer.fit_transform(batch)
-            return batch_tfidf, False
-        else:
-            # For subsequent batches, just transform
-            batch_tfidf = self.vectorizer.transform(batch)
-            return batch_tfidf, False
-    
-    def process_in_batches(self):
-        """
-        Process the data in batches to handle large datasets efficiently.
-        
-        Returns:
-            scipy.sparse.csr_matrix: Combined TF-IDF matrix
-        """
-        self.preprocess_text()
-        sparse_matrices = []
-        fit = True  # Flag to fit only the first batch
-        
-        # Use tqdm for progress tracking
-        for start_idx in tqdm(range(0, self.df_size, self.batch_size), 
-                              desc="Processing batches", 
-                              unit="batch"):
-            end_idx = min(start_idx + self.batch_size, self.df_size)
-            batch_tfidf, fit = self._vectorize_tfidf_batch(start_idx, end_idx, fit)
-            
-            # Store the sparse matrix
-            sparse_matrices.append(batch_tfidf)
-            
-            # Clean up memory
-            gc.collect()
-        
-        # Combine all sparse matrices efficiently
-        logger.info("Combining sparse matrices")
-        all_tfidf_matrix = sparse.vstack(sparse_matrices)
-        return all_tfidf_matrix
-    
-    def _vectorize_tfidf(self):
-        """Vectorize the entire dataset using batched processing."""
-        logger.info("Starting TF-IDF vectorization")
-        return self.process_in_batches()
-
     def build_model(self, input_dim):
         """
         Build a triple-path model with enhanced feature extraction.
@@ -262,7 +175,7 @@ class FeatureEngineering(NlpModel):
             input_dim: Dimension of the input features
                 
         Returns:
-            tf.keras.models.Model: Compiled Keras model
+            Model: Selected model instance
         """
         logger.info(f"Building triple-path model with input dimension {input_dim}")
         
@@ -806,7 +719,7 @@ class FeatureEngineering(NlpModel):
         
         return embedding_matrix
 
-    def train_model(self, X, y):
+    def train_model(self, X, y, model_type='ensemble'):
         """
         Train the model with improved training settings.
         
@@ -817,8 +730,7 @@ class FeatureEngineering(NlpModel):
         Returns:
             tf.keras.models.Model: Trained model
         """
-        # Build the model
-        model = self.build_model(X.shape[1])
+        input_dim = X.shape[1]
         
         # Enhanced callbacks for training
         callbacks = [
@@ -859,13 +771,11 @@ class FeatureEngineering(NlpModel):
         )
         
         logger.info("Model training completed")
-        
-        # Visualize training history
         self.visualize_training_history(history)
         
         return model
 
-    def evaluate_model(self, model, X_test, y_test):
+    def evaluate_model(self, model, X_test, y_test, model_type='ensemble'):
         """
         Evaluate the model on the test set with comprehensive metrics.
         
@@ -1588,8 +1498,8 @@ def main():
         # Load data and process TF-IDF
         X_train, y_train, X_test, y_test = model.load_and_process_data()
         
-        # Train the model
-        trained_model = model.train_model(X_train, y_train)
+        # Train and evaluate each model type separately
+        model_types = ['simple', 'deep', 'stacked', 'ensemble']
         
         # Evaluate the model with comprehensive metrics
         loss, mae, y_pred = model.evaluate_model(trained_model, X_test, y_test)
