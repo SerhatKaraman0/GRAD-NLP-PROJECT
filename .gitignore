@@ -124,3 +124,9 @@ data/PREPROCESSED_Reviews.csv
 data/tokenized_data.csv
 data/bag_of_words/bag_of_words.parquet.gz
 data/tfidf_scores.csv
+data/embeddings/glove.6B.50d.txt
+data/embeddings/glove.6B.100d.txt
+data/embeddings/glove.6B.200d.txt
+data/embeddings/glove.6B.300d.txt
+data/embeddings/glove.6B.zip
+data/best_model_simple.h5
