@@ -34,6 +34,12 @@ import zipfile
 import json
 from gensim.models import Word2Vec
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch.optim import Adam
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -191,141 +197,341 @@ class FeatureEngineering(NlpModel):
         
         return X_train, y_train, X_test, y_test, embedding_matrix, max_len
 
-    def train_model(self, X, y, embedding_matrix, max_len, model_type='ensemble'):
-        """
-        Train the specified model type with embeddings.
+    def build_lstm_model(self, input_size, embedding_dim=100, hidden_size=128, num_layers=2, dropout=0.5):
+        """Build a PyTorch LSTM model instead of TensorFlow"""
         
-        Args:
-            X: Training features
-            y: Target values
-            embedding_matrix: Pre-trained word embeddings
-            max_len: Maximum sequence length
-            model_type: Type of model to train
-            
-        Returns:
-            tf.keras.models.Model: Trained model
-        """
-        # Select model type
+        # Define a PyTorch LSTM model
+        class LSTMModel(nn.Module):
+            def __init__(self, input_size, embedding_dim, hidden_size, num_layers, dropout):
+                super(LSTMModel, self).__init__()
+                self.embedding = nn.Embedding(input_size, embedding_dim)
+                self.lstm = nn.LSTM(
+                    embedding_dim, 
+                    hidden_size, 
+                    num_layers=num_layers, 
+                    batch_first=True, 
+                    dropout=dropout if num_layers > 1 else 0,
+                    bidirectional=True
+                )
+                self.dropout = nn.Dropout(dropout)
+                # Bidirectional LSTM has 2*hidden_size as output size
+                self.fc = nn.Linear(hidden_size * 2, 1)
+                
+            def forward(self, x):
+                x = self.embedding(x)
+                lstm_out, _ = self.lstm(x)
+                # Get the output for the last time step
+                lstm_out = lstm_out[:, -1, :]
+                out = self.dropout(lstm_out)
+                out = self.fc(out)
+                return out
+                
+        return LSTMModel(input_size, embedding_dim, hidden_size, num_layers, dropout)
+    
+    def train_model(self, X, y, embedding_matrix, max_len, model_type='ensemble'):
+        """Train the PyTorch model with improved progress tracking."""
+        # Convert numpy arrays to PyTorch tensors
+        X_tensor = torch.tensor(X, dtype=torch.long)
+        y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
+        
+        # Create dataset and dataloader
+        dataset = TensorDataset(X_tensor, y_tensor)
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+        
+        # Use a smaller batch size if running out of memory
+        batch_size = 128 if torch.cuda.is_available() else 64
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size)
+        
+        # Build model based on type
         if model_type == 'simple':
-            model_class = SimpleLSTMModel(
-                max_features=self.max_features,
-                embedding_dim=self.embedding_dim,
-                max_len=max_len,
-                embedding_matrix=embedding_matrix
+            model = self.build_lstm_model(
+                input_size=len(embedding_matrix), 
+                embedding_dim=100, 
+                hidden_size=128, 
+                num_layers=1, 
+                dropout=0.3
             )
         elif model_type == 'deep':
-            model_class = DeepLSTMModel(
-                max_features=self.max_features,
-                embedding_dim=self.embedding_dim,
-                max_len=max_len,
-                embedding_matrix=embedding_matrix
+            model = self.build_lstm_model(
+                input_size=len(embedding_matrix), 
+                embedding_dim=100, 
+                hidden_size=256, 
+                num_layers=2, 
+                dropout=0.5
             )
         elif model_type == 'stacked':
-            model_class = StackedLSTMModel(
-                max_features=self.max_features,
-                embedding_dim=self.embedding_dim,
-                max_len=max_len,
-                embedding_matrix=embedding_matrix
+            model = self.build_stacked_lstm_model(
+                input_size=len(embedding_matrix), 
+                embedding_dim=100
             )
+        elif model_type == 'ensemble':
+            # Create ensemble of models
+            models = []
+            for m_type in ['simple', 'deep', 'stacked']:
+                if m_type == 'stacked':
+                    models.append(self.build_stacked_lstm_model(
+                        input_size=len(embedding_matrix), 
+                        embedding_dim=100
+                    ))
+                else:
+                    hidden_size = 128 if m_type == 'simple' else 256
+                    num_layers = 1 if m_type == 'simple' else 2
+                    models.append(self.build_lstm_model(
+                        input_size=len(embedding_matrix), 
+                        embedding_dim=100, 
+                        hidden_size=hidden_size, 
+                        num_layers=num_layers, 
+                        dropout=0.5
+                    ))
+            # Use the first model for now
+            model = models[0]
         else:
-            model_class = EnsembleModel(
-                max_features=self.max_features,
-                embedding_dim=self.embedding_dim,
-                max_len=max_len,
-                embedding_matrix=embedding_matrix
-            )
+            raise ValueError(f"Unknown model type: {model_type}")
         
-        # Build and train model
-        model = model_class.build()
+        # Move model to GPU
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        logger.info(f"Using device: {device}")
+        model.to(device)
         
-        # Setup callbacks
-        callbacks = [
-            tf.keras.callbacks.EarlyStopping(
-                monitor='val_loss',
-                patience=3,
-                restore_best_weights=True
-            ),
-            tf.keras.callbacks.ModelCheckpoint(
-                os.path.join(self.SAVE_DATA_DIR, f'best_model_{model_type}.h5'),
-                monitor='val_loss',
-                save_best_only=True
-            ),
-            tf.keras.callbacks.TensorBoard(
-                log_dir=os.path.join(self.SAVE_DATA_DIR, 'logs', model_type),
-                histogram_freq=1
-            )
-        ]
+        # Track model parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"Model parameters: {trainable_params:,} trainable out of {total_params:,} total")
         
-        # Train model
-        logger.info(f"Training {model_type} model")
-        history = model.fit(
-            X, y,
-            epochs=20,
-            batch_size=256,
-            validation_split=0.2,
-            callbacks=callbacks,
-            verbose=1
+        # Set up optimizer and loss function with learning rate scheduler
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=3, verbose=True
         )
+        criterion = nn.MSELoss()
+        
+        # Training loop
+        epochs = 20
+        best_val_loss = float('inf')
+        best_val_acc = 0.0
+        patience = 7
+        patience_counter = 0
+        history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': [], 'lr': []}
+        
+        # Create progress bar for epochs
+        epoch_bar = tqdm(range(epochs), desc=f"Training {model_type} model", position=0)
+        
+        try:
+            for epoch in epoch_bar:
+                model.train()
+                train_loss = 0.0
+                train_correct = 0
+                train_total = 0
+                
+                # Training phase
+                batch_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]", 
+                                leave=False, position=1)
+                for batch_X, batch_y in batch_bar:
+                    batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                    
+                    # Forward pass
+                    outputs = model(batch_X)
+                    loss = criterion(outputs, batch_y)
+                    
+                    # Calculate accuracy (rounded predictions)
+                    predicted = torch.round(outputs)
+                    train_total += batch_y.size(0)
+                    train_correct += (predicted == batch_y).sum().item()
+                    current_acc = train_correct / max(1, train_total)
+                    
+                    # Backward and optimize
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    
+                    train_loss += loss.item()
+                    
+                    # Update batch progress bar
+                    batch_bar.set_postfix({
+                        'loss': f"{loss.item():.4f}", 
+                        'acc': f"{current_acc:.4f}"
+                    })
+                
+                # Validation phase
+                model.eval()
+                val_loss = 0.0
+                val_correct = 0
+                val_total = 0
+                
+                with torch.no_grad():
+                    val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]", 
+                                  leave=False, position=1)
+                    for batch_X, batch_y in val_bar:
+                        batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                        
+                        outputs = model(batch_X)
+                        loss = criterion(outputs, batch_y)
+                        
+                        # Calculate accuracy
+                        predicted = torch.round(outputs)
+                        val_total += batch_y.size(0)
+                        val_correct += (predicted == batch_y).sum().item()
+                        current_val_acc = val_correct / max(1, val_total)
+                        
+                        val_loss += loss.item()
+                        
+                        # Update validation bar
+                        val_bar.set_postfix({
+                            'loss': f"{loss.item():.4f}", 
+                            'acc': f"{current_val_acc:.4f}"
+                        })
+                
+                # Calculate average losses and accuracies
+                avg_train_loss = train_loss / len(train_loader)
+                avg_val_loss = val_loss / len(val_loader)
+                train_accuracy = train_correct / max(1, train_total)
+                val_accuracy = val_correct / max(1, val_total)
+                
+                # Get current learning rate
+                current_lr = optimizer.param_groups[0]['lr']
+                
+                # Update history
+                history['train_loss'].append(avg_train_loss)
+                history['val_loss'].append(avg_val_loss)
+                history['train_acc'].append(train_accuracy)
+                history['val_acc'].append(val_accuracy)
+                history['lr'].append(current_lr)
+                
+                # Update scheduler
+                scheduler.step(avg_val_loss)
+                
+                # Update epoch progress bar
+                epoch_bar.set_postfix({
+                    'train_loss': f"{avg_train_loss:.4f}",
+                    'val_loss': f"{avg_val_loss:.4f}", 
+                    'train_acc': f"{train_accuracy:.4f}", 
+                    'val_acc': f"{val_accuracy:.4f}",
+                    'lr': f"{current_lr:.6f}"
+                })
+                
+                # Print statistics
+                logger.info(f"Epoch {epoch+1}/{epochs} - "
+                      f"Train Loss: {avg_train_loss:.4f}, "
+                      f"Val Loss: {avg_val_loss:.4f}, "
+                      f"Train Acc: {train_accuracy:.4f}, "
+                      f"Val Acc: {val_accuracy:.4f}, "
+                      f"LR: {current_lr:.6f}")
+                
+                # Save the best model
+                if val_accuracy > best_val_acc:
+                    best_val_acc = val_accuracy
+                    patience_counter = 0
+                    torch.save(model.state_dict(), os.path.join(self.SAVE_DATA_DIR, f'best_model_{model_type}.pth'))
+                    logger.info(f"✅ New best model saved with val accuracy: {best_val_acc:.4f}")
+                elif avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    patience_counter = 0
+                    torch.save(model.state_dict(), os.path.join(self.SAVE_DATA_DIR, f'best_loss_model_{model_type}.pth'))
+                    logger.info(f"✅ New best loss model saved: {best_val_loss:.4f}")
+                else:
+                    patience_counter += 1
+                    logger.info(f"No improvement for {patience_counter} epochs")
+                
+                # Early stopping
+                if patience_counter >= patience:
+                    logger.info(f"Early stopping after {epoch+1} epochs")
+                    break
+                    
+        except KeyboardInterrupt:
+            logger.info("Training interrupted by user")
         
         # Save training history
         self.save_training_history(history, model_type)
         
+        # Plot training history
+        self._plot_training_history(history, model_type)
+        
         return model, history
-
+    
+    def build_stacked_lstm_model(self, input_size, embedding_dim=100):
+        """Build a PyTorch stacked LSTM model"""
+        class StackedLSTMModel(nn.Module):
+            def __init__(self, input_size, embedding_dim):
+                super(StackedLSTMModel, self).__init__()
+                self.embedding = nn.Embedding(input_size, embedding_dim)
+                self.lstm1 = nn.LSTM(embedding_dim, 128, batch_first=True, bidirectional=True)
+                self.lstm2 = nn.LSTM(256, 64, batch_first=True, bidirectional=True)
+                self.dropout1 = nn.Dropout(0.3)
+                self.dropout2 = nn.Dropout(0.3)
+                self.fc1 = nn.Linear(128, 64)
+                self.fc2 = nn.Linear(64, 1)
+                
+            def forward(self, x):
+                x = self.embedding(x)
+                lstm1_out, _ = self.lstm1(x)
+                lstm1_out = self.dropout1(lstm1_out)
+                lstm2_out, _ = self.lstm2(lstm1_out)
+                # Get the output for the last time step
+                lstm2_out = lstm2_out[:, -1, :]
+                out = self.dropout2(lstm2_out)
+                out = F.relu(self.fc1(out))
+                out = self.fc2(out)
+                return out
+                
+        return StackedLSTMModel(input_size, embedding_dim)
+    
     def save_training_history(self, history, model_type):
         """Save training history to file."""
         history_path = os.path.join(self.SAVE_DATA_DIR, f'training_history_{model_type}.json')
         with open(history_path, 'w') as f:
-            json.dump(history.history, f)
-        logger.info(f"Training history saved to {history_path}")
-
-    def build_model(self, input_dim):
-        """
-        Select and build a model for sentiment analysis.
-        
-        Args:
-            input_dim: Dimension of the input features
-            
-        Returns:
-            Model: Selected model instance
-        """
-        # Create ensemble model by default
-        model = EnsembleModel(input_dim)
-        return model.build()
-
+            # Convert tensors/numpy arrays to Python lists for JSON serialization
+            serializable_history = {}
+            for key, values in history.items():
+                serializable_history[key] = [float(val) for val in values]
+            json.dump(serializable_history, f)
+    
     def evaluate_model(self, model, X_test, y_test, model_type='ensemble'):
-        """
-        Evaluate the model on test data.
+        """Evaluate the PyTorch model on test data."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model.to(device)
+        model.eval()
         
-        Args:
-            model: Trained model
-            X_test: Test features
-            y_test: Test target values
-            model_type: Type of model being evaluated
-            
-        Returns:
-            tuple: (loss, mean absolute error, predicted values)
-        """
-        logger.info("Evaluating model on test data")
+        # Convert to PyTorch tensors
+        X_test_tensor = torch.tensor(X_test, dtype=torch.long).to(device)
+        y_test_tensor = torch.tensor(y_test, dtype=torch.float32).to(device)
         
-        # Prepare inputs based on model type
-        if model_type == 'ensemble':
-            X_test_input = [X_test, X_test, X_test]
-        else:
-            X_test_input = X_test
+        # Create dataloader for batched evaluation
+        test_dataset = TensorDataset(X_test_tensor, y_test_tensor.view(-1, 1))
+        test_loader = DataLoader(test_dataset, batch_size=256)
         
-        # Evaluate model
-        metrics = model.evaluate(X_test_input, y_test, verbose=0)
-        loss, mae, acc = metrics
-        logger.info(f"Model evaluation: Loss={loss:.4f}, MAE={mae:.4f}, Accuracy={acc:.4f}")
+        # Evaluate
+        test_loss = 0.0
+        all_preds = []
+        criterion = nn.MSELoss()
         
-        # Get predictions
-        y_pred = model.predict(X_test_input, verbose=0).flatten()
+        with torch.no_grad():
+            for batch_X, batch_y in tqdm(test_loader, desc="Evaluating"):
+                outputs = model(batch_X)
+                test_loss += criterion(outputs, batch_y).item()
+                all_preds.append(outputs.cpu().numpy())
         
-        # Create visualizations and save metrics
+        # Combine predictions and convert to numpy
+        y_pred = np.vstack(all_preds).flatten()
+        
+        # Calculate metrics
+        mae = mean_absolute_error(y_test, y_pred)
+        mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
+        
+        # Calculate accuracy (rounded predictions)
+        y_pred_rounded = np.round(y_pred)
+        acc = accuracy_score(np.round(y_test), y_pred_rounded)
+        
+        # Log results
+        logger.info(f"Model evaluation: MSE={mse:.4f}, RMSE={rmse:.4f}, MAE={mae:.4f}, Accuracy={acc:.4f}")
+        
+        # Create visualizations
         self._create_evaluation_visualizations(y_test, y_pred, mae)
         
-        return loss, mae, y_pred
+        return mse, mae, acc, y_pred
 
     def _create_evaluation_visualizations(self, y_test, y_pred, mae):
         """Create and save evaluation visualizations."""
@@ -335,17 +541,66 @@ class FeatureEngineering(NlpModel):
         # Create visualizations...
         # [Previous visualization code remains the same]
 
+    def _plot_training_history(self, history, model_type):
+        """Create and save plots of training history."""
+        metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
+        os.makedirs(metrics_dir, exist_ok=True)
+        
+        # Create a figure with subplots
+        plt.figure(figsize=(15, 10))
+        
+        # Plot training & validation loss
+        plt.subplot(2, 2, 1)
+        plt.plot(history['train_loss'], label='Training')
+        plt.plot(history['val_loss'], label='Validation')
+        plt.title('Model Loss')
+        plt.ylabel('Loss')
+        plt.xlabel('Epoch')
+        plt.legend()
+        plt.grid(True)
+        
+        # Plot training & validation accuracy
+        plt.subplot(2, 2, 2)
+        plt.plot(history['train_acc'], label='Training')
+        plt.plot(history['val_acc'], label='Validation')
+        plt.title('Model Accuracy')
+        plt.ylabel('Accuracy')
+        plt.xlabel('Epoch')
+        plt.legend()
+        plt.grid(True)
+        
+        # Plot learning rate
+        plt.subplot(2, 2, 3)
+        plt.plot(history['lr'])
+        plt.title('Learning Rate')
+        plt.ylabel('Learning Rate')
+        plt.xlabel('Epoch')
+        plt.grid(True)
+        
+        # Plot loss vs accuracy
+        plt.subplot(2, 2, 4)
+        plt.scatter(history['train_loss'], history['train_acc'], label='Training')
+        plt.scatter(history['val_loss'], history['val_acc'], label='Validation')
+        plt.title('Loss vs. Accuracy')
+        plt.xlabel('Loss')
+        plt.ylabel('Accuracy')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(metrics_dir, f'training_history_{model_type}.png'))
+        plt.close()
+        
+        logger.info(f"Training history plots saved to {metrics_dir}")
+
+
 def main():
     """Main execution function."""
-    # Enable memory growth for GPU if available
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        try:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logger.info(f"GPU(s) detected: {len(gpus)}")
-        except Exception as e:
-            logger.warning(f"Error setting GPU memory growth: {e}")
+    # Check if PyTorch GPU is available
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Using device: {device}")
+    if torch.cuda.is_available():
+        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
     
     # Initialize FeatureEngineering class
     model = FeatureEngineering(batch_size=10_000, max_features=7000, embedding_dim=100)
@@ -355,44 +610,45 @@ def main():
         X_train, y_train, X_test, y_test, embedding_matrix, max_len = model.load_and_process_data()
         
         # Train and evaluate each model type separately
-        model_types = ['simple', 'deep', 'stacked', 'ensemble']
+        model_types = ['ensemble']
         results = {}
         
         for model_type in model_types:
             logger.info(f"\n{'='*50}")
-            logger.info(f"Training {model_type.upper()} LSTM Model")
+            logger.info(f"Training {model_type.upper()} LSTM Model")            
             logger.info(f"{'='*50}")
             
-            # Train the model
+            # Train model with PyTorch
             trained_model, history = model.train_model(
-                X_train, y_train,
-                embedding_matrix=embedding_matrix,
-                max_len=max_len,
+                X_train, y_train, 
+                embedding_matrix, max_len,
                 model_type=model_type
             )
             
-            # Evaluate the model
-            metrics = trained_model.evaluate(X_test, y_test, verbose=0)
-            y_pred = trained_model.predict(X_test)
+            # Evaluate model
+            mse, mae, acc, y_pred = model.evaluate_model(
+                trained_model, X_test, y_test, 
+                model_type=model_type
+            )
             
-            # Calculate additional metrics
+            # Store results
             results[model_type] = {
-                'loss': metrics[0],
-                'accuracy': metrics[1],
-                'precision': precision_score(y_test, y_pred.round()),
-                'recall': recall_score(y_test, y_pred.round()),
-                'f1': f1_score(y_test, y_pred.round())
+                'mse': mse,
+                'mae': mae,
+                'accuracy': acc,
+                'precision': precision_score(np.round(y_test), np.round(y_pred), zero_division=0),
+                'recall': recall_score(np.round(y_test), np.round(y_pred), zero_division=0),
+                'f1': f1_score(np.round(y_test), np.round(y_pred), zero_division=0)
             }
             
             # Save model and results
-            model_path = os.path.join(model.SAVE_DATA_DIR, f"sentiment_model_{model_type}.h5")
-            trained_model.save(model_path)
+            model_path = os.path.join(model.SAVE_DATA_DIR, f"sentiment_model_{model_type}.pth")
+            torch.save(trained_model.state_dict(), model_path)
             
             # Clear memory
             del trained_model
+            torch.cuda.empty_cache()
             gc.collect()
-            if gpus:
-                tf.keras.backend.clear_session()
         
         # Compare results
         results_df = pd.DataFrame(results).round(4)
@@ -406,5 +662,6 @@ def main():
         logger.error(f"Error in processing: {e}", exc_info=True)
         raise
 
+    
 if __name__ == "__main__":
     main()

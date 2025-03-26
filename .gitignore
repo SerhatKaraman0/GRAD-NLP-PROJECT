@@ -23,6 +23,8 @@ build/
 *.tsbuildinfo
 bag_of_words/
 notebook/
+embeddings/
+feature_importance.csv
 
 # Environment and secrets
 .env
@@ -130,3 +132,16 @@ data/embeddings/glove.6B.200d.txt
 data/embeddings/glove.6B.300d.txt
 data/embeddings/glove.6B.zip
 data/best_model_simple.h5
+data/best_loss_model_deep.pth
+data/best_loss_model_simple.pth
+data/best_loss_model_stacked.pth
+data/best_model_deep.pth
+data/best_model_ensemble.pth
+data/best_model_simple.pth
+data/best_model_stacked.pth
+data/training_history_deep.json
+data/training_history_ensemble.json
+data/training_history_simple.json
+data/training_history_stacked.json
+data/metrics/training_history_deep.png
+data/metrics/training_history_stacked.png
