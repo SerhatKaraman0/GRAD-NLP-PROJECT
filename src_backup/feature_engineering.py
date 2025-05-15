@@ -2,23 +2,23 @@
 Legacy module that now serves as a wrapper around the refactored modules.
 This file is kept for backward compatibility, but all functionality
 has been moved to specialized modules:
-- data/data_processing.py
-- features/embeddings.py 
-- models/model_builder.py
-- models/model_training.py
-- models/model_evaluation.py
-- visualization/dashboard_generator.py
+- data_processing.py
+- embeddings.py 
+- model_builder.py
+- model_training.py
+- model_evaluation.py
+- dashboard_generator.py
 """
 
-from src.core.common_imports import * # noqa: F403, F405
-from src.core.logging_config import *  # noqa: F403, F405
-from src.core.nlpmodel import NlpModel
-from src.data.data_processing import DataProcessor
-from src.features.embeddings import EmbeddingProcessor
-from src.models.model_builder import ModelBuilder
-from src.models.model_training import ModelTrainer
-from src.models.model_evaluation import ModelEvaluator
-from src.visualization.dashboard_generator import DashboardGenerator
+from src.common_imports import * # noqa: F403, F405
+from src.logging_config import *  # noqa: F403, F405
+from src.nlpmodel import NlpModel
+from src.data_processing import DataProcessor
+from src.embeddings import EmbeddingProcessor
+from src.model_builder import ModelBuilder
+from src.model_training import ModelTrainer
+from src.model_evaluation import ModelEvaluator
+from src.dashboard_generator import DashboardGenerator
 
 import os
 import gc

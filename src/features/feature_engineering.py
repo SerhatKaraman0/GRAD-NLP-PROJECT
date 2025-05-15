@@ -2,12 +2,12 @@
 Legacy module that now serves as a wrapper around the refactored modules.
 This file is kept for backward compatibility, but all functionality
 has been moved to specialized modules:
-- data/data_processing.py
-- features/embeddings.py 
-- models/model_builder.py
-- models/model_training.py
-- models/model_evaluation.py
-- visualization/dashboard_generator.py
+- data_processing.py
+- embeddings.py 
+- model_builder.py
+- model_training.py
+- model_evaluation.py
+- dashboard_generator.py
 """
 
 from src.core.common_imports import * # noqa: F403, F405

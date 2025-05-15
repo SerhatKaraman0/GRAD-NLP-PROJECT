@@ -1,11 +1,11 @@
-from src.core.common_imports import * # noqa: F403, F405
-from src.core.logging_config import *  # noqa: F403, F405
-from src.data.data_processing import DataProcessor
-from src.features.embeddings import EmbeddingProcessor
-from src.models.model_builder import ModelBuilder
-from src.models.model_training import ModelTrainer
-from src.models.model_evaluation import ModelEvaluator
-from src.visualization.dashboard_generator import DashboardGenerator
+from src.common_imports import * # noqa: F403, F405
+from src.logging_config import *  # noqa: F403, F405
+from src.data_processing import DataProcessor
+from src.embeddings import EmbeddingProcessor
+from src.model_builder import ModelBuilder
+from src.model_training import ModelTrainer
+from src.model_evaluation import ModelEvaluator
+from src.dashboard_generator import DashboardGenerator
 
 import os
 import gc
