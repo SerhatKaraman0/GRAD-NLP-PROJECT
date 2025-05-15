@@ -8,7 +8,7 @@ images/
 logs/
 *.cpython
 .DS_Store
-
+data/models
 
 # Ignore build and generated files
 firebase_auth/
@@ -124,3 +124,11 @@ data/PREPROCESSED_Reviews.csv
 data/tokenized_data.csv
 data/bag_of_words/bag_of_words.parquet.gz
 data/tfidf_scores.csv
+data/embeddings/glove.6B.50d.txt
+.gitignore
+data/embeddings/glove.6B.100d.txt
+data/embeddings/glove.6B.200d.txt
+data/embeddings/embedding_matrix.npy
+data/embeddings/glove.6B.zip
+data/sentiment_model_best.h5
+data/sentiment_model_final.h5

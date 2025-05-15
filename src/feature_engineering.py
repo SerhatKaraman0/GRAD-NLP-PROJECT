@@ -1,8 +1,10 @@
-from src.common_imports import *  # noqa: F403, F405
+from src.common_imports import * # noqa: F403, F405
 from src.nlpmodel import NlpModel
 from src.logging_config import *  # noqa: F403, F405
 from utils.helper import CONTRACTIONS_DICT, SLANG_DICT  
+from src.models import SimpleLSTMModel, DeepLSTMModel, StackedLSTMModel, EnsembleModel
 
+import tensorflow as tf
 import numpy as np
 import pandas as pd
 import os
@@ -10,6 +12,7 @@ import gc
 import sys
 import logging
 from tqdm import tqdm
+import datetime
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -23,792 +26,992 @@ import base64
 
 from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk.corpus import stopwords
+import swifter
+
+from sklearn.feature_extraction.text import CountVectorizer
+
 from scipy import sparse
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_score, recall_score
-from sklearn.metrics import accuracy_score, mean_squared_error, mean_absolute_error, r2_score
-import matplotlib.pyplot as plt
+
+import numpy as np
+from tqdm import tqdm
+import gc
+import dask.dataframe as dd
 import seaborn as sns
-import io
-import base64
 
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Input
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
 
-# To ensure compatibility across environments
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Set up logging with a more efficient configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+console = Console()
+
 
 class FeatureEngineering(NlpModel):
-    def __init__(self, batch_size=10_000, max_features=7000):
-        """
-        Initialize paths and load dataset.
+    def __init__(self):
+            super().__init__()
+            self.SAVE_DATA_DIR = os.path.join(self.BASE_DIR, "data")
+            self.STATS_DIR = os.path.join(self.BASE_DIR, "stats")
+            self.PREPROCESSED_DATA_DIR = os.path.join(self.SAVE_DATA_DIR, "PREPROCESSED_Reviews.csv")
+            
+            self.df = pd.read_csv(self.PREPROCESSED_DATA_DIR)
+            self.df_size = len(self.df)
+
+            self.batch_size = 10_000
+            self.n_batches = (self.df_size + self.batch_size - 1) // self.batch_size
+
+            self.vectorizer = CountVectorizer()
+
+    def word_freq(self):
+        X = self.vectorizer.fit_transform(self.df['Text'])
         
-        Args:
-            batch_size: Size of batches for processing
-            max_features: Maximum number of features for TF-IDF vectorizer
-        """
-        super().__init__()
-        self.SAVE_DATA_DIR = os.path.join(self.BASE_DIR, "data")
-        self.PREPROCESSED_DATA_PATH = os.path.join(self.SAVE_DATA_DIR, "PREPROCESSED_Reviews.csv")
-        self.batch_size = batch_size
-        self.vectorizer = TfidfVectorizer(
-            stop_words='english', 
-            max_features=max_features,
-            lowercase=True,
-            sublinear_tf=True  # Apply sublinear tf scaling (1 + log(tf))
+        word_counts = X.sum(axis=0).A1
+        feature_names = self.vectorizer.get_feature_names_out() 
+        
+        freq = dict(zip(feature_names, word_counts))
+        
+        sorted_freq = sorted(freq.items(), key=lambda item: item[1], reverse=True)
+
+        # Convert to DataFrame for plotting
+        freq_df = pd.DataFrame(sorted_freq[:10], columns=['Word', 'Frequency'])
+
+        sns.barplot(x='Word', y='Frequency', data=freq_df)
+        plt.xticks(rotation=45)
+        plt.show()
+        
+        
+
+    def create_bow(self):
+        """For creating the bag of words from preprocessed data and saving the result into a DataFrame"""
+        self.self.logger.info("BAG OF WORDS ACTION HAS STARTED..")
+
+        # Ensure NaN values are handled
+        self.df['Text'] = self.df['Text'].fillna('')
+        
+        # Initialize CountVectorizer with more aggressive feature reduction
+        self.vectorizer = CountVectorizer(
+            min_df=5,            # Ignore terms that appear in less than 5 documents
+            max_df=0.5,          # Ignore terms that appear in more than 50% of documents
+            max_features=10000   # Only keep top 10,000 features
         )
         
-        # Defer dataframe loading to when it's needed
-        self.df = None
-        self.df_size = None
-        self.n_batches = None
+        self.vectorizer.fit(self.df['Text'])
 
-    def load_data(self):
-        """Load data from file and initialize related properties."""
-        logger.info(f"Loading data from {self.PREPROCESSED_DATA_PATH}")
-        # Use low_memory=False to avoid mixed type inference warnings
-        self.df = pd.read_csv(self.PREPROCESSED_DATA_PATH, low_memory=False)
-        self.df_size = len(self.df)
-        self.n_batches = (self.df_size + self.batch_size - 1) // self.batch_size
-        logger.info(f"Data loaded: {self.df_size} records, {self.n_batches} batches")
+    def load_and_process_data(self):
+        """Load and process the data including embedding preparation."""
+        self.logger.info("Loading and processing data...")
         
-    def preprocess_text(self):
-        """Preprocess text data by handling NaNs."""
-        if self.df is None:
-            self.load_data()
-        logger.info("Preprocessing text data")
-        # Fill missing values with empty string (more efficient than fillna)
-        self.df['Text'] = self.df['Text'].fillna('', inplace=False)
-
-    def _vectorize_tfidf_batch(self, start_idx, end_idx, fit=False):
-        """
-        Vectorize a batch of data using TF-IDF.
+        # Load preprocessed data
+        df = pd.read_csv(self.PREPROCESSED_DATA_PATH)
         
-        Args:
-            start_idx: Starting index of the batch
-            end_idx: Ending index of the batch
-            fit: Whether to fit the vectorizer on this batch
-            
-        Returns:
-            tuple: (TF-IDF sparse matrix, updated fit flag)
-        """
-        batch = self.df.iloc[start_idx:end_idx]['Text']
+        # Convert text to string and handle NaN values
+        df['Text'] = df['Text'].fillna('').astype(str)
         
-        if fit:
-            # Only fit on first batch
-            batch_tfidf = self.vectorizer.fit_transform(batch)
-            return batch_tfidf, False
-        else:
-            # For subsequent batches, just transform
-            batch_tfidf = self.vectorizer.transform(batch)
-            return batch_tfidf, False
-    
-    def process_in_batches(self):
-        """
-        Process the data in batches to handle large datasets efficiently.
+        # Use the original 1-5 score directly
+        df['sentiment'] = df['Score']  # Use the actual 1-5 rating
         
-        Returns:
-            scipy.sparse.csr_matrix: Combined TF-IDF matrix
-        """
-        self.preprocess_text()
-        sparse_matrices = []
-        fit = True  # Flag to fit only the first batch
+        # Remove any rows with empty text
+        df = df[df['Text'].str.strip() != '']
         
-        # Use tqdm for progress tracking
-        for start_idx in tqdm(range(0, self.df_size, self.batch_size), 
-                              desc="Processing batches", 
-                              unit="batch"):
-            end_idx = min(start_idx + self.batch_size, self.df_size)
-            batch_tfidf, fit = self._vectorize_tfidf_batch(start_idx, end_idx, fit)
-            
-            # Store the sparse matrix
-            sparse_matrices.append(batch_tfidf)
-            
-            # Clean up memory
-            gc.collect()
+        # Use the 'Text' column for our analysis
+        texts = df['Text'].values
+        labels = df['sentiment'].values
         
-        # Combine all sparse matrices efficiently
-        logger.info("Combining sparse matrices")
-        all_tfidf_matrix = sparse.vstack(sparse_matrices)
-        return all_tfidf_matrix
-    
-    def _vectorize_tfidf(self):
-        """Vectorize the entire dataset using batched processing."""
-        logger.info("Starting TF-IDF vectorization")
-        return self.process_in_batches()
-
-    def build_model(self, input_dim):
-        """
-        Build a neural network model for sentiment analysis.
+        self.logger.info(f"Total samples: {len(texts)}")
+        self.logger.info(f"Sample text: {texts[0][:100]}...")
         
-        Args:
-            input_dim: Dimension of the input features
-            
-        Returns:
-            tf.keras.models.Sequential: Compiled Keras model
-        """
-        logger.info(f"Building model with input dimension {input_dim}")
+        # Prepare embeddings
+        sequences, embedding_matrix = self.prepare_embeddings(texts)
         
-        # Set up for mixed precision training for better performance on compatible GPUs
-        try:
-            policy = tf.keras.mixed_precision.Policy('mixed_float16')
-            tf.keras.mixed_precision.set_global_policy(policy)
-            logger.info("Using mixed precision training")
-        except:
-            logger.info("Mixed precision not available, using default precision")
+        # Pad sequences
+        max_len = min(max(len(seq) for seq in sequences), 500)  # Cap at 500 tokens
+        X = tf.keras.preprocessing.sequence.pad_sequences(sequences, maxlen=max_len)
         
-        # Model architecture (Dense Feedforward Network)
-        model = Sequential([
-            Input(shape=(input_dim,)),
-            Dense(512, activation='relu', kernel_initializer='he_normal'),
-            Dropout(0.3),
-            Dense(256, activation='relu', kernel_initializer='he_normal'),
-            Dense(1, activation='linear')  # Regression for rating prediction
-        ])
-        
-        # Use Adam optimizer with learning rate scheduling
-        optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-        
-        model.compile(
-            optimizer=optimizer, 
-            loss='mse',  # Mean squared error for regression
-            metrics=['mae']  # Mean absolute error
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, labels, test_size=0.2, random_state=42, stratify=labels
         )
         
-        return model
+        self.logger.info(f"Training data shape: {X_train.shape}")
+        self.logger.info(f"Testing data shape: {X_test.shape}")
+        self.logger.info(f"Score distribution: {np.bincount(labels.astype(int))}")
+        
+        return X_train, y_train, X_test, y_test, embedding_matrix, max_len
 
-    def train_model(self, X, y):
-        """
-        Train a model on the TF-IDF matrix and visualize training metrics.
+        # Process in smaller batches to reduce memory usage
+        batch_size = min(5000, self.batch_size)  # Use smaller batches if needed
         
-        Args:
-            X: Training features
-            y: Target values
-            
-        Returns:
-            tf.keras.models.Sequential: Trained model
-        """
-        # Build the model
-        model = self.build_model(X.shape[1])
+        # Define a PyTorch LSTM model
+        class LSTMModel(nn.Module):
+            def __init__(self, input_size, embedding_dim, hidden_size, num_layers, dropout):
+                super(LSTMModel, self).__init__()
+                self.embedding = nn.Embedding(input_size, embedding_dim)
+                self.lstm = nn.LSTM(
+                    embedding_dim, 
+                    hidden_size, 
+                    num_layers=num_layers, 
+                    batch_first=True, 
+                    dropout=dropout if num_layers > 1 else 0,
+                    bidirectional=True
+                )
+                self.dropout = nn.Dropout(dropout)
+                # Bidirectional LSTM has 2*hidden_size as output size
+                self.fc = nn.Linear(hidden_size * 2, 1)
+                
+            def forward(self, x):
+                x = self.embedding(x)
+                lstm_out, _ = self.lstm(x)
+                # Get the output for the last time step
+                lstm_out = lstm_out[:, -1, :]
+                out = self.dropout(lstm_out)
+                out = self.fc(out)
+                return out
+                
+        return LSTMModel(input_size, embedding_dim, hidden_size, num_layers, dropout)
+    
+    def train_model(self, X, y, embedding_matrix, max_len, model_type='ensemble'):
+        """Train the PyTorch model with improved progress tracking."""
+        # Convert numpy arrays to PyTorch tensors
+        X_tensor = torch.tensor(X, dtype=torch.long)
+        y_tensor = torch.tensor(y, dtype=torch.float32).view(-1, 1)
         
-        # Set up callbacks for training
-        callbacks = [
-            EarlyStopping(
-                monitor='val_loss',
-                patience=3,
-                restore_best_weights=True,
-                verbose=1
-            ),
-            ModelCheckpoint(
-                os.path.join(self.SAVE_DATA_DIR, "sentiment_model_best.h5"),
-                monitor='val_loss',
-                save_best_only=True,
-                verbose=1
-            ),
-            # Add learning rate reduction on plateau
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='val_loss',
-                factor=0.5,
-                patience=2,
-                min_lr=0.00001,
-                verbose=1
+        # Create dataset and dataloader
+        dataset = TensorDataset(X_tensor, y_tensor)
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+        
+        # Use a smaller batch size if running out of memory
+        batch_size = 128 if torch.cuda.is_available() else 64
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size)
+        
+        # Build model based on type
+        if model_type == 'simple':
+            model = self.build_lstm_model(
+                input_size=len(embedding_matrix), 
+                embedding_dim=100, 
+                hidden_size=128, 
+                num_layers=1, 
+                dropout=0.3
             )
-        ]
+        elif model_type == 'deep':
+            model = self.build_lstm_model(
+                input_size=len(embedding_matrix), 
+                embedding_dim=100, 
+                hidden_size=256, 
+                num_layers=2, 
+                dropout=0.5
+            )
+        elif model_type == 'stacked':
+            model = self.build_stacked_lstm_model(
+                input_size=len(embedding_matrix), 
+                embedding_dim=100
+            )
+        elif model_type == 'ensemble':
+            # Create ensemble of models
+            models = []
+            for m_type in ['simple', 'deep', 'stacked']:
+                if m_type == 'stacked':
+                    models.append(self.build_stacked_lstm_model(
+                        input_size=len(embedding_matrix), 
+                        embedding_dim=100
+                    ))
+                else:
+                    hidden_size = 128 if m_type == 'simple' else 256
+                    num_layers = 1 if m_type == 'simple' else 2
+                    models.append(self.build_lstm_model(
+                        input_size=len(embedding_matrix), 
+                        embedding_dim=100, 
+                        hidden_size=hidden_size, 
+                        num_layers=num_layers, 
+                        dropout=0.5
+                    ))
+            # Use the first model for now
+            model = models[0]
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
         
-        # Add custom callback to track learning rate only if not using mixed precision
-        try:
-            # For standard optimizers
-            if hasattr(model.optimizer, 'lr'):
-                callbacks.append(
-                    tf.keras.callbacks.LambdaCallback(
-                        on_epoch_end=lambda epoch, logs: logs.update({'lr': float(model.optimizer.lr.numpy())})
-                    )
-                )
-            # For LossScaleOptimizer (mixed precision)
-            elif hasattr(model.optimizer, '_optimizer') and hasattr(model.optimizer._optimizer, 'lr'):
-                callbacks.append(
-                    tf.keras.callbacks.LambdaCallback(
-                        on_epoch_end=lambda epoch, logs: logs.update({'lr': float(model.optimizer._optimizer.lr.numpy())})
-                    )
-                )
-            else:
-                logger.warning("Could not access learning rate for tracking")
-        except Exception as e:
-            logger.warning(f"Error setting up learning rate tracking: {e}")
+        # Move model to GPU
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.logger.info(f"Using device: {device}")
+        model.to(device)
         
-        # Train the model with batching for memory efficiency
-        logger.info("Starting model training")
-        history = model.fit(
-            X, y,
-            epochs=10,
-            batch_size=512,
-            validation_split=0.2,
-            callbacks=callbacks,
-            verbose=2  # Less verbose output
+        # Track model parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        self.logger.info(f"Model parameters: {trainable_params:,} trainable out of {total_params:,} total")
+        
+        # Set up optimizer and loss function with learning rate scheduler
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=3, verbose=True
         )
+        criterion = nn.MSELoss()
         
-        logger.info("Model training completed")
+        # Training loop
+        epochs = 20
+        best_val_loss = float('inf')
+        best_val_acc = 0.0
+        patience = 7
+        patience_counter = 0
+        history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': [], 'lr': []}
         
-        # Visualize training history
-        self.visualize_training_history(history)
+        # Create progress bar for epochs
+        epoch_bar = tqdm(range(epochs), desc=f"Training {model_type} model", position=0)
         
-        return model
-
-    def evaluate_model(self, model, X_test, y_test):
-        """
-        Evaluate the model on the test set and visualize results.
+        try:
+            for epoch in epoch_bar:
+                model.train()
+                train_loss = 0.0
+                train_correct = 0
+                train_total = 0
+                
+                # Training phase
+                batch_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]", 
+                                leave=False, position=1)
+                for batch_X, batch_y in batch_bar:
+                    batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                    
+                    # Forward pass
+                    outputs = model(batch_X)
+                    loss = criterion(outputs, batch_y)
+                    
+                    # Calculate accuracy (rounded predictions)
+                    # For 1-5 scores, we need to clamp and round
+                    predicted = torch.round(torch.clamp(outputs, 1, 5))
+                    train_total += batch_y.size(0)
+                    train_correct += (predicted == batch_y).sum().item()
+                    current_acc = train_correct / max(1, train_total)
+                    
+                    # Backward and optimize
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    
+                    train_loss += loss.item()
+                    
+                    # Update batch progress bar
+                    batch_bar.set_postfix({
+                        'loss': f"{loss.item():.4f}", 
+                        'acc': f"{current_acc:.4f}"
+                    })
+                
+                # Validation phase
+                model.eval()
+                val_loss = 0.0
+                val_correct = 0
+                val_total = 0
+                
+                with torch.no_grad():
+                    val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]", 
+                                  leave=False, position=1)
+                    for batch_X, batch_y in val_bar:
+                        batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                        
+                        outputs = model(batch_X)
+                        loss = criterion(outputs, batch_y)
+                        
+                        # Calculate accuracy with clamping for 1-5 range
+                        predicted = torch.round(torch.clamp(outputs, 1, 5))
+                        val_total += batch_y.size(0)
+                        val_correct += (predicted == batch_y).sum().item()
+                        current_val_acc = val_correct / max(1, val_total)
+                        
+                        val_loss += loss.item()
+                        
+                        # Update validation bar
+                        val_bar.set_postfix({
+                            'loss': f"{loss.item():.4f}", 
+                            'acc': f"{current_val_acc:.4f}"
+                        })
+                
+                # Calculate average losses and accuracies
+                avg_train_loss = train_loss / len(train_loader)
+                avg_val_loss = val_loss / len(val_loader)
+                train_accuracy = train_correct / max(1, train_total)
+                val_accuracy = val_correct / max(1, val_total)
+                
+                # Get current learning rate
+                current_lr = optimizer.param_groups[0]['lr']
+                
+                # Update history
+                history['train_loss'].append(avg_train_loss)
+                history['val_loss'].append(avg_val_loss)
+                history['train_acc'].append(train_accuracy)
+                history['val_acc'].append(val_accuracy)
+                history['lr'].append(current_lr)
+                
+                # Update scheduler
+                scheduler.step(avg_val_loss)
+                
+                # Update epoch progress bar
+                epoch_bar.set_postfix({
+                    'train_loss': f"{avg_train_loss:.4f}",
+                    'val_loss': f"{avg_val_loss:.4f}", 
+                    'train_acc': f"{train_accuracy:.4f}", 
+                    'val_acc': f"{val_accuracy:.4f}",
+                    'lr': f"{current_lr:.6f}"
+                })
+                
+                # Print statistics
+                self.logger.info(f"Epoch {epoch+1}/{epochs} - "
+                      f"Train Loss: {avg_train_loss:.4f}, "
+                      f"Val Loss: {avg_val_loss:.4f}, "
+                      f"Train Acc: {train_accuracy:.4f}, "
+                      f"Val Acc: {val_accuracy:.4f}, "
+                      f"LR: {current_lr:.6f}")
+                
+                # Save the best model
+                if val_accuracy > best_val_acc:
+                    best_val_acc = val_accuracy
+                    patience_counter = 0
+                    torch.save(model.state_dict(), os.path.join(self.SAVE_DATA_DIR, f'best_model_{model_type}.pth'))
+                    self.logger.info(f"✅ New best model saved with val accuracy: {best_val_acc:.4f}")
+                elif avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    patience_counter = 0
+                    torch.save(model.state_dict(), os.path.join(self.SAVE_DATA_DIR, f'best_loss_model_{model_type}.pth'))
+                    self.logger.info(f"✅ New best loss model saved: {best_val_loss:.4f}")
+                else:
+                    patience_counter += 1
+                    self.logger.info(f"No improvement for {patience_counter} epochs")
+                
+                # Early stopping
+                if patience_counter >= patience:
+                    self.logger.info(f"Early stopping after {epoch+1} epochs")
+                    break
+                    
+        except KeyboardInterrupt:
+            self.logger.info("Training interrupted by user")
         
-        Args:
-            model: Trained model
-            X_test: Test features
-            y_test: Test target values
-            
-        Returns:
-            tuple: (loss, mean absolute error, predicted values)
-        """
-        logger.info("Evaluating model on test data")
-        loss, mae = model.evaluate(X_test, y_test, verbose=0)
-        logger.info(f"Model evaluation: Loss={loss:.4f}, MAE={mae:.4f}")
+        # Save training history
+        self.save_training_history(history, model_type)
         
-        # Get predictions
-        y_pred = model.predict(X_test, verbose=0).flatten()
+        # Plot training history
+        self._plot_training_history(history, model_type)
         
-        # Create metrics directory if it doesn't exist
-        metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
-        os.makedirs(metrics_dir, exist_ok=True)
+        return model, history
+    
+    def build_stacked_lstm_model(self, input_size, embedding_dim=100):
+        """Build a PyTorch stacked LSTM model"""
+        class StackedLSTMModel(nn.Module):
+            def __init__(self, input_size, embedding_dim):
+                super(StackedLSTMModel, self).__init__()
+                self.embedding = nn.Embedding(input_size, embedding_dim)
+                self.lstm1 = nn.LSTM(embedding_dim, 128, batch_first=True, bidirectional=True)
+                self.lstm2 = nn.LSTM(256, 64, batch_first=True, bidirectional=True)
+                self.dropout1 = nn.Dropout(0.3)
+                self.dropout2 = nn.Dropout(0.3)
+                self.fc1 = nn.Linear(128, 64)
+                self.fc2 = nn.Linear(64, 1)
+                
+            def forward(self, x):
+                x = self.embedding(x)
+                lstm1_out, _ = self.lstm1(x)
+                lstm1_out = self.dropout1(lstm1_out)
+                lstm2_out, _ = self.lstm2(lstm1_out)
+                # Get the output for the last time step
+                lstm2_out = lstm2_out[:, -1, :]
+                out = self.dropout2(lstm2_out)
+                out = F.relu(self.fc1(out))
+                out = self.fc2(out)
+                return out
+                
+        return StackedLSTMModel(input_size, embedding_dim)
+    
+    def save_training_history(self, history, model_type):
+        """Save training history to file."""
+        history_path = os.path.join(self.SAVE_DATA_DIR, f'training_history_{model_type}.json')
+        with open(history_path, 'w') as f:
+            # Convert tensors/numpy arrays to Python lists for JSON serialization
+            serializable_history = {}
+            for key, values in history.items():
+                serializable_history[key] = [float(val) for val in values]
+            json.dump(serializable_history, f)
+    
+    def evaluate_model(self, model, X_test, y_test, model_type='ensemble'):
+        """Evaluate the PyTorch model on test data."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model.to(device)
+        model.eval()
         
-        # 1. Actual vs Predicted scatter plot
-        plt.figure(figsize=(10, 6))
-        plt.scatter(y_test, y_pred, alpha=0.5)
-        plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], 'r--')
-        plt.xlabel('Actual Ratings')
-        plt.ylabel('Predicted Ratings')
-        plt.title('Actual vs Predicted Ratings')
-        plt.savefig(os.path.join(metrics_dir, 'actual_vs_predicted.png'), dpi=300, bbox_inches='tight')
-        plt.close()
+        # Convert to PyTorch tensors
+        X_test_tensor = torch.tensor(X_test, dtype=torch.long).to(device)
+        y_test_tensor = torch.tensor(y_test, dtype=torch.float32).to(device)
         
-        # 2. Error distribution
-        errors = y_pred - y_test
-        plt.figure(figsize=(10, 6))
-        sns.histplot(errors, kde=True)
-        plt.xlabel('Prediction Error')
-        plt.ylabel('Count')
-        plt.title(f'Error Distribution (MAE: {mae:.4f})')
-        plt.axvline(x=0, color='r', linestyle='--')
-        plt.savefig(os.path.join(metrics_dir, 'error_distribution.png'), dpi=300, bbox_inches='tight')
-        plt.close()
+        # Create dataloader for batched evaluation
+        test_dataset = TensorDataset(X_test_tensor, y_test_tensor.view(-1, 1))
+        test_loader = DataLoader(test_dataset, batch_size=256)
         
-        # 3. Error by rating category
-        plt.figure(figsize=(12, 6))
-        df_results = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred, 'Error': errors})
-        df_results['AbsError'] = np.abs(errors)
-        df_results['RatingCategory'] = pd.cut(df_results['Actual'], bins=[0, 1.5, 2.5, 3.5, 4.5, 5.5], 
-                                             labels=['1 Star', '2 Stars', '3 Stars', '4 Stars', '5 Stars'])
+        # Evaluate
+        test_loss = 0.0
+        all_preds = []
+        criterion = nn.MSELoss()
         
-        sns.boxplot(x='RatingCategory', y='AbsError', data=df_results)
-        plt.xlabel('Rating Category')
-        plt.ylabel('Absolute Error')
-        plt.title('Error Distribution by Rating Category')
-        plt.savefig(os.path.join(metrics_dir, 'error_by_category.png'), dpi=300, bbox_inches='tight')
-        plt.close()
+        with torch.no_grad():
+            for batch_X, batch_y in tqdm(test_loader, desc="Evaluating"):
+                outputs = model(batch_X)
+                test_loss += criterion(outputs, batch_y).item()
+                all_preds.append(outputs.cpu().numpy())
         
-        # 4. Save metrics to CSV for further analysis
-        metrics_df = pd.DataFrame({
-            'Actual': y_test,
-            'Predicted': y_pred,
-            'Error': errors,
-            'AbsError': np.abs(errors)
-        })
-        metrics_df.to_csv(os.path.join(metrics_dir, 'prediction_metrics.csv'), index=False)
+        # Combine predictions and convert to numpy
+        y_pred = np.vstack(all_preds).flatten()
         
-        # 5. Summary metrics table
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        r2 = r2_score(y_test, y_pred)
-        
-        summary_metrics = {
-            'Metric': ['MSE', 'MAE', 'RMSE', 'R²'],
-            'Value': [loss, mae, rmse, r2]
-        }
-        summary_df = pd.DataFrame(summary_metrics)
-        summary_df.to_csv(os.path.join(metrics_dir, 'summary_metrics.csv'), index=False)
-        
-        # Log metrics
-        logger.info(f"Summary Metrics:\n{summary_df.to_string()}")
-        
-        return loss, mae, y_pred
-
-    def visualize_training_history(self, history):
-        """
-        Visualize the model training history.
-        
-        Args:
-            history: Keras history object from model.fit()
-        """
-        metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
-        os.makedirs(metrics_dir, exist_ok=True)
-        
-        # Convert history to DataFrame
-        history_df = pd.DataFrame(history.history)
-        
-        # Save history to CSV
-        history_df.to_csv(os.path.join(metrics_dir, 'training_history.csv'), index=False)
-        
-        # Plot training & validation loss
-        plt.figure(figsize=(12, 5))
-        
-        plt.subplot(1, 2, 1)
-        plt.plot(history_df['loss'], label='Training Loss')
-        plt.plot(history_df['val_loss'], label='Validation Loss')
-        plt.title('Model Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.legend()
-        
-        plt.subplot(1, 2, 2)
-        plt.plot(history_df['mae'], label='Training MAE')
-        plt.plot(history_df['val_mae'], label='Validation MAE')
-        plt.title('Model MAE')
-        plt.xlabel('Epoch')
-        plt.ylabel('Mean Absolute Error')
-        plt.legend()
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(metrics_dir, 'training_history.png'), dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        # Learning rate plot if available
-        if 'lr' in history_df.columns:
-            plt.figure(figsize=(10, 4))
-            plt.plot(history_df['lr'])
-            plt.title('Learning Rate')
-            plt.xlabel('Epoch')
-            plt.ylabel('Learning Rate')
-            plt.savefig(os.path.join(metrics_dir, 'learning_rate.png'), dpi=300, bbox_inches='tight')
-            plt.close()
-        
-        logger.info(f"Training history visualizations saved to {metrics_dir}")
-
-    def build_interactive_dashboard(self, model, X_test, y_test, y_pred):
-        """
-        Build an interactive HTML dashboard of model metrics.
-        
-        Args:
-            model: Trained model
-            X_test: Test features
-            y_test: Test targets
-            y_pred: Predicted values
-        """
-        metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
-        os.makedirs(metrics_dir, exist_ok=True)
+        # Clamp predictions to valid score range (1-5)
+        y_pred_clamped = np.clip(y_pred, 1, 5)
         
         # Calculate metrics
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        r2 = r2_score(y_test, y_pred)
-        mae = np.mean(np.abs(y_test - y_pred))
-        mse = mean_squared_error(y_test, y_pred)
+        mae = mean_absolute_error(y_test, y_pred_clamped)
+        mse = mean_squared_error(y_test, y_pred_clamped)
+        rmse = np.sqrt(mse)
         
-        # For classification-like metrics, round predictions
-        y_test_rounded = np.round(y_test).astype(int)
-        y_pred_rounded = np.round(y_pred).astype(int)
+        # Calculate accuracy (rounded predictions within 1-5 range)
+        y_pred_rounded = np.round(y_pred_clamped)
+        acc = accuracy_score(y_test, y_pred_rounded)
         
-        # Cap to valid range
-        y_pred_rounded = np.clip(y_pred_rounded, 1, 5)
+        # Log results
+        self.logger.info(f"Model evaluation: MSE={mse:.4f}, RMSE={rmse:.4f}, MAE={mae:.4f}, Accuracy={acc:.4f}")
+        
+        # Create visualizations
+        self._create_evaluation_visualizations(y_test, y_pred_clamped, mae)
+        
+        return mse, mae, acc, y_pred_clamped
+
+    def _create_evaluation_visualizations(self, y_test, y_pred, mae):
+        """Create and save evaluation visualizations."""
+        metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
+        os.makedirs(metrics_dir, exist_ok=True)
         
         # Create a confusion matrix
-        conf_matrix = confusion_matrix(y_test_rounded, y_pred_rounded)
+        plt.figure(figsize=(10, 8))
+        cm = confusion_matrix(np.round(y_test), np.round(y_pred))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.savefig(os.path.join(metrics_dir, 'confusion_matrix.png'))
+        plt.close()
         
-        # Function to generate base64 image from figure
-        def fig_to_base64(fig):
-            buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-            buf.seek(0)
-            img_str = base64.b64encode(buf.read()).decode('utf-8')
-            buf.close()
-            return img_str
+        # Create a distribution plot
+        plt.figure(figsize=(10, 6))
+        plt.hist(y_test, alpha=0.5, label='True Values')
+        plt.hist(y_pred, alpha=0.5, label='Predictions')
+        plt.title('Distribution of True vs Predicted Values')
+        plt.xlabel('Values')
+        plt.ylabel('Frequency')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join(metrics_dir, 'distribution_plot.png'))
+        plt.close()
         
-        # Create figures and convert to base64
+        # Create a scatter plot of true vs predicted
+        plt.figure(figsize=(10, 6))
+        plt.scatter(y_test, y_pred, alpha=0.3)
+        plt.plot([1, 5], [1, 5], 'r--')  # Diagonal line for perfect predictions
+        plt.title(f'True vs Predicted Values (MAE: {mae:.4f})')
+        plt.xlabel('True Values')
+        plt.ylabel('Predictions')
+        plt.grid(True)
+        plt.savefig(os.path.join(metrics_dir, 'true_vs_pred.png'))
+        plt.close()
+
+    def _plot_training_history(self, history, model_type):
+        """Create and save plots of training history."""
+        metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
+        os.makedirs(metrics_dir, exist_ok=True)
         
-        # 1. Actual vs Predicted
-        fig1 = plt.figure(figsize=(8, 6))
-        plt.scatter(y_test, y_pred, alpha=0.5)
-        plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], 'r--')
-        plt.xlabel('Actual Ratings')
-        plt.ylabel('Predicted Ratings')
-        plt.title('Actual vs Predicted Ratings')
-        plt.grid(True, alpha=0.3)
-        actual_vs_pred_img = fig_to_base64(fig1)
-        plt.close(fig1)
+        # Create a figure with subplots
+        plt.figure(figsize=(15, 10))
         
-        # 2. Error distribution
-        errors = y_pred - y_test
-        fig2 = plt.figure(figsize=(8, 6))
-        sns.histplot(errors, kde=True)
-        plt.xlabel('Prediction Error')
-        plt.ylabel('Count')
-        plt.title(f'Error Distribution (MAE: {mae:.4f})')
-        plt.axvline(x=0, color='r', linestyle='--')
-        plt.grid(True, alpha=0.3)
-        error_dist_img = fig_to_base64(fig2)
-        plt.close(fig2)
+        # Plot training & validation loss
+        plt.subplot(2, 2, 1)
+        plt.plot(history['train_loss'], label='Training')
+        plt.plot(history['val_loss'], label='Validation')
+        plt.title('Model Loss')
+        plt.ylabel('Loss')
+        plt.xlabel('Epoch')
+        plt.legend()
+        plt.grid(True)
         
-        # 3. Confusion Matrix
-        fig3 = plt.figure(figsize=(8, 6))
-        sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', 
-                    xticklabels=range(1, 6), yticklabels=range(1, 6))
-        plt.xlabel('Predicted Rating')
-        plt.ylabel('Actual Rating')
-        plt.title('Confusion Matrix (Rounded Ratings)')
-        conf_matrix_img = fig_to_base64(fig3)
-        plt.close(fig3)
+        # Plot training & validation accuracy
+        plt.subplot(2, 2, 2)
+        plt.plot(history['train_acc'], label='Training')
+        plt.plot(history['val_acc'], label='Validation')
+        plt.title('Model Accuracy')
+        plt.ylabel('Accuracy')
+        plt.xlabel('Epoch')
+        plt.legend()
+        plt.grid(True)
         
-        # Create HTML dashboard
-        html_content = f'''
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Sentiment Analysis Model Dashboard</title>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    line-height: 1.6;
-                    margin: 0;
-                    padding: 20px;
-                    color: #333;
-                }}
-                .container {{
-                    max-width: 1200px;
-                    margin: 0 auto;
-                }}
-                .header {{
-                    background-color: #4a86e8;
-                    color: white;
-                    padding: 20px;
-                    text-align: center;
-                    border-radius: 5px;
-                    margin-bottom: 20px;
-                }}
-                .metric-box {{
-                    background-color: #f9f9f9;
-                    border-radius: 5px;
-                    padding: 15px;
-                    margin-bottom: 15px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }}
-                .metrics-container {{
-                    display: flex;
-                    flex-wrap: wrap;
-                    justify-content: space-between;
-                    margin-bottom: 20px;
-                }}
-                .metric-item {{
-                    width: 22%;
-                    text-align: center;
-                    background-color: #e8f4f8;
-                    padding: 15px;
-                    border-radius: 5px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }}
-                .metric-value {{
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: #4a86e8;
-                }}
-                .charts-container {{
-                    display: flex;
-                    flex-wrap: wrap;
-                    justify-content: space-between;
-                }}
-                .chart-box {{
-                    width: 48%;
-                    margin-bottom: 20px;
-                    background-color: #f9f9f9;
-                    border-radius: 5px;
-                    padding: 15px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }}
-                .chart-box img {{
-                    width: 100%;
-                    height: auto;
-                }}
-                .full-width {{
-                    width: 100%;
-                }}
-                h2 {{
-                    color: #4a86e8;
-                }}
-                @media (max-width: 768px) {{
-                    .metric-item {{
-                        width: 48%;
+        # Plot learning rate
+        plt.subplot(2, 2, 3)
+        plt.plot(history['lr'])
+        plt.title('Learning Rate')
+        plt.ylabel('Learning Rate')
+        plt.xlabel('Epoch')
+        plt.grid(True)
+        
+        # Plot loss vs accuracy
+        plt.subplot(2, 2, 4)
+        plt.scatter(history['train_loss'], history['train_acc'], label='Training')
+        plt.scatter(history['val_loss'], history['val_acc'], label='Validation')
+        plt.title('Loss vs. Accuracy')
+        plt.xlabel('Loss')
+        plt.ylabel('Accuracy')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(metrics_dir, f'training_history_{model_type}.png'))
+        plt.close()
+        
+        self.logger.info(f"Training history plots saved to {metrics_dir}")
+
+    def generate_model_dashboard(self, model_results, model_type='ensemble'):
+        """
+        Generate an HTML dashboard for model metrics and visualizations.
+        
+        Args:
+            model_results: Dictionary containing model evaluation metrics
+            model_type: Type of model ('simple', 'deep', 'stacked', or 'ensemble')
+        """
+        metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
+        os.makedirs(metrics_dir, exist_ok=True)
+        
+        # Extract metrics
+        mse = model_results.get('mse', 0)
+        mae = model_results.get('mae', 0)
+        accuracy = model_results.get('accuracy', 0)
+        precision = model_results.get('precision', 0)
+        recall = model_results.get('recall', 0)
+        f1 = model_results.get('f1', 0)
+        rmse = np.sqrt(mse) if mse else 0
+        r2 = model_results.get('r2', float('nan'))
+        
+        # Get current timestamp
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Convert images to base64 for embedding in HTML
+        def image_to_base64(image_path):
+            if os.path.exists(image_path):
+                with open(image_path, "rb") as img_file:
+                    return base64.b64encode(img_file.read()).decode('utf-8')
+            return ""
+        
+        confusion_matrix_b64 = image_to_base64(os.path.join(metrics_dir, 'confusion_matrix.png'))
+        true_vs_pred_b64 = image_to_base64(os.path.join(metrics_dir, 'true_vs_pred.png'))
+        distribution_plot_b64 = image_to_base64(os.path.join(metrics_dir, 'distribution_plot.png'))
+        training_history_b64 = image_to_base64(os.path.join(metrics_dir, f'training_history_{model_type}.png'))
+        
+        # HTML template
+        html_content = f'''<!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Sentiment Analysis Model Dashboard</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        line-height: 1.6;
+                        margin: 0;
+                        padding: 20px;
+                        color: #333;
+                    }}
+                    .container {{
+                        max-width: 1200px;
+                        margin: 0 auto;
+                    }}
+                    .header {{
+                        background-color: #4a86e8;
+                        color: white;
+                        padding: 20px;
+                        text-align: center;
+                        border-radius: 5px;
+                        margin-bottom: 20px;
+                    }}
+                    .metric-box {{
+                        background-color: #f9f9f9;
+                        border-radius: 5px;
+                        padding: 15px;
                         margin-bottom: 15px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    .metrics-container {{
+                        display: flex;
+                        flex-wrap: wrap;
+                        justify-content: space-between;
+                        margin-bottom: 20px;
+                    }}
+                    .metric-item {{
+                        width: 22%;
+                        text-align: center;
+                        background-color: #e8f4f8;
+                        padding: 15px;
+                        border-radius: 5px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    .metric-value {{
+                        font-size: 24px;
+                        font-weight: bold;
+                        color: #4a86e8;
+                    }}
+                    .charts-container {{
+                        display: flex;
+                        flex-wrap: wrap;
+                        justify-content: space-between;
                     }}
                     .chart-box {{
+                        width: 48%;
+                        margin-bottom: 20px;
+                        background-color: #f9f9f9;
+                        border-radius: 5px;
+                        padding: 15px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    .chart-box img {{
+                        width: 100%;
+                        height: auto;
+                    }}
+                    .full-width {{
                         width: 100%;
                     }}
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>Sentiment Analysis Model Dashboard</h1>
-                    <p>Model performance metrics and visualizations</p>
-                </div>
-                
-                <div class="metric-box">
-                    <h2>Key Performance Metrics</h2>
-                    <div class="metrics-container">
-                        <div class="metric-item">
-                            <h3>MAE</h3>
-                            <div class="metric-value">{mae:.4f}</div>
-                            <p>Mean Absolute Error</p>
-                        </div>
-                        <div class="metric-item">
-                            <h3>MSE</h3>
-                            <div class="metric-value">{mse:.4f}</div>
-                            <p>Mean Squared Error</p>
-                        </div>
-                        <div class="metric-item">
-                            <h3>RMSE</h3>
-                            <div class="metric-value">{rmse:.4f}</div>
-                            <p>Root Mean Squared Error</p>
-                        </div>
-                        <div class="metric-item">
-                            <h3>R²</h3>
-                            <div class="metric-value">{r2:.4f}</div>
-                            <p>Coefficient of Determination</p>
+                    h2 {{
+                        color: #4a86e8;
+                    }}
+                    @media (max-width: 768px) {{
+                        .metric-item {{
+                            width: 48%;
+                            margin-bottom: 15px;
+                        }}
+                        .chart-box {{
+                            width: 100%;
+                        }}
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>Sentiment Analysis Model Dashboard</h1>
+                        <p>Model performance metrics and visualizations for {model_type.upper()} model</p>
+                    </div>
+                    
+                    <div class="metric-box">
+                        <h2>Key Performance Metrics</h2>
+                        <div class="metrics-container">
+                            <div class="metric-item">
+                                <h3>Accuracy</h3>
+                                <div class="metric-value">{accuracy:.4f}</div>
+                                <p>Classification Accuracy</p>
+                            </div>
+                            <div class="metric-item">
+                                <h3>MAE</h3>
+                                <div class="metric-value">{mae:.4f}</div>
+                                <p>Mean Absolute Error</p>
+                            </div>
+                            <div class="metric-item">
+                                <h3>MSE</h3>
+                                <div class="metric-value">{mse:.4f}</div>
+                                <p>Mean Squared Error</p>
+                            </div>
+                            <div class="metric-item">
+                                <h3>RMSE</h3>
+                                <div class="metric-value">{rmse:.4f}</div>
+                                <p>Root Mean Squared Error</p>
+                            </div>
+                            <div class="metric-item">
+                                <h3>R²</h3>
+                                <div class="metric-value">{r2}</div>
+                                <p>Coefficient of Determination</p>
+                            </div>
+                            <div class="metric-item">
+                                <h3>Precision</h3>
+                                <div class="metric-value">{precision:.4f}</div>
+                                <p>Precision Score</p>
+                            </div>
+                            <div class="metric-item">
+                                <h3>Recall</h3>
+                                <div class="metric-value">{recall:.4f}</div>
+                                <p>Recall Score</p>
+                            </div>
+                            <div class="metric-item">
+                                <h3>F1</h3>
+                                <div class="metric-value">{f1:.4f}</div>
+                                <p>F1 Score</p>
+                            </div>
                         </div>
                     </div>
-                </div>
-                
-                <div class="charts-container">
-                    <div class="chart-box">
-                        <h2>Actual vs Predicted Ratings</h2>
-                        <img src="data:image/png;base64,{actual_vs_pred_img}" alt="Actual vs Predicted Plot">
+                    
+                    <div class="charts-container">
+                        <div class="chart-box">
+                            <h2>Actual vs Predicted Ratings</h2>
+                            <img src="data:image/png;base64,{true_vs_pred_b64}">
+                        </div>
+                        <div class="chart-box">
+                            <h2>Error Distribution</h2>
+                            <img src="data:image/png;base64,{distribution_plot_b64}">
+                        </div>
+                        <div class="chart-box full-width">
+                            <h2>Confusion Matrix (Rounded Ratings)</h2>
+                            <img src="data:image/png;base64,{confusion_matrix_b64}">
+                        </div>
+                        <div class="chart-box full-width">
+                            <h2>Training History</h2>
+                            <img src="data:image/png;base64,{training_history_b64}">
+                        </div>
                     </div>
-                    <div class="chart-box">
-                        <h2>Error Distribution</h2>
-                        <img src="data:image/png;base64,{error_dist_img}" alt="Error Distribution">
-                    </div>
-                    <div class="chart-box full-width">
-                        <h2>Confusion Matrix (Rounded Ratings)</h2>
-                        <img src="data:image/png;base64,{conf_matrix_img}" alt="Confusion Matrix">
+                    
+                    <div class="metric-box">
+                        <h2>Model Information</h2>
+                        <p><strong>Features:</strong> {self.max_features} embedding features</p>
+                        <p><strong>Architecture:</strong> {model_type.upper()} LSTM model</p>
+                        <p><strong>Embedding Dimension:</strong> {self.embedding_dim}</p>
+                        <p><strong>Generated:</strong> {timestamp}</p>
                     </div>
                 </div>
-                
-                <div class="metric-box">
-                    <h2>Model Information</h2>
-                    <p><strong>Features:</strong> {model.input_shape[1]} TF-IDF features</p>
-                    <p><strong>Architecture:</strong> {model.input_shape[1]} → 512 → 256 → 1</p>
-                    <p><strong>Test Set Size:</strong> {len(y_test)} samples</p>
-                    <p><strong>Generated:</strong> {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        '''
+            </body>
+            </html>'''
         
-        # Save the HTML dashboard
+        # Write HTML to file
+        dashboard_path = os.path.join(metrics_dir, f'model_dashboard_{model_type}.html')
+        with open(dashboard_path, 'w') as f:
+            f.write(html_content)
+        
+        self.logger.info(f"Model dashboard generated at {dashboard_path}")
+        
+        # Generate a combined dashboard for all models if this is the last model
+        if model_type == 'ensemble':
+            self.generate_combined_dashboard()
+        
+        return dashboard_path
+
+    def generate_combined_dashboard(self):
+        """Generate a combined dashboard comparing all model types"""
+        metrics_dir = os.path.join(self.SAVE_DATA_DIR, "metrics")
+        
+        # Read comparison results
+        comparison_path = os.path.join(self.SAVE_DATA_DIR, 'model_comparison.csv')
+        if not os.path.exists(comparison_path):
+            self.logger.warning(f"Model comparison file not found at {comparison_path}")
+            return
+        
+        # Load comparison data
+        try:
+            comparison_df = pd.read_csv(comparison_path)
+            # Convert DataFrame to HTML table
+            comparison_table = comparison_df.to_html(classes='comparison-table', border=0)
+        except Exception as e:
+            self.logger.error(f"Error loading comparison data: {e}")
+            comparison_table = "<p>Error loading comparison data</p>"
+        
+        # Get current timestamp
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # HTML for combined dashboard
+        html_content = f'''<!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Combined Model Comparison Dashboard</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        line-height: 1.6;
+                        margin: 0;
+                        padding: 20px;
+                        color: #333;
+                    }}
+                    .container {{
+                        max-width: 1200px;
+                        margin: 0 auto;
+                    }}
+                    .header {{
+                        background-color: #4a86e8;
+                        color: white;
+                        padding: 20px;
+                        text-align: center;
+                        border-radius: 5px;
+                        margin-bottom: 20px;
+                    }}
+                    .comparison-box {{
+                        background-color: #f9f9f9;
+                        border-radius: 5px;
+                        padding: 15px;
+                        margin-bottom: 15px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        overflow-x: auto;
+                    }}
+                    .model-links {{
+                        display: flex;
+                        justify-content: space-around;
+                        margin: 20px 0;
+                    }}
+                    .model-link {{
+                        display: inline-block;
+                        padding: 10px 15px;
+                        background-color: #4a86e8;
+                        color: white;
+                        text-decoration: none;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }}
+                    .comparison-table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin: 15px 0;
+                    }}
+                    .comparison-table th, .comparison-table td {{
+                        padding: 10px;
+                        text-align: center;
+                        border-bottom: 1px solid #ddd;
+                    }}
+                    .comparison-table th {{
+                        background-color: #e8f4f8;
+                        color: #333;
+                    }}
+                    .comparison-table tr:hover {{
+                        background-color: #f5f5f5;
+                    }}
+                    .footer {{
+                        margin-top: 20px;
+                        text-align: center;
+                        color: #666;
+                        font-size: 0.9em;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>Sentiment Analysis Model Comparison</h1>
+                        <p>Comparative analysis of all trained models</p>
+                    </div>
+                    
+                    <div class="comparison-box">
+                        <h2>Model Performance Comparison</h2>
+                        {comparison_table}
+                    </div>
+                    
+                    <div class="comparison-box">
+                        <h2>Individual Model Dashboards</h2>
+                        <p>Click on a model type to view its detailed dashboard:</p>
+                        <div class="model-links">
+                            <a href="model_dashboard_simple.html" class="model-link">Simple LSTM</a>
+                            <a href="model_dashboard_deep.html" class="model-link">Deep LSTM</a>
+                            <a href="model_dashboard_stacked.html" class="model-link">Stacked LSTM</a>
+                            <a href="model_dashboard_ensemble.html" class="model-link">Ensemble</a>
+                        </div>
+                    </div>
+                    
+                    <div class="footer">
+                        <p>Generated on: {timestamp}</p>
+                    </div>
+                </div>
+            </body>
+            </html>'''
+        
+        # Write HTML to file
         dashboard_path = os.path.join(metrics_dir, 'model_dashboard.html')
         with open(dashboard_path, 'w') as f:
             f.write(html_content)
         
-        logger.info(f"Interactive dashboard saved to {dashboard_path}")
+        self.logger.info(f"Combined model dashboard generated at {dashboard_path}")
+        
         return dashboard_path
-
-    def save_to_parquet(self, df, output_path):
-        """
-        Save the processed DataFrame to Parquet with gzip compression.
-        
-        Args:
-            df: DataFrame to save
-            output_path: Path to save the file (without extension)
-        """
-        logger.info(f"Saving DataFrame to {output_path}.parquet.gz")
-        
-        # Ensure the output directory exists
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        # Save to Parquet format with gzip compression
-        df.to_parquet(f"{output_path}.parquet.gz", compression="gzip")
-        
-        logger.info(f"Data saved to {output_path}.parquet.gz")
-
-    def load_and_process_data(self):
-        """
-        Load and process data, returning train/test splits.
-        
-        Returns:
-            tuple: (X_train, y_train, X_test, y_test)
-        """
-        if self.df is None:
-            self.load_data()
-        
-        # Generate TF-IDF features
-        X_sparse = self._vectorize_tfidf()
-        y = self.df["Score"].values
-        
-        logger.info(f"TF-IDF matrix shape: {X_sparse.shape}")
-        
-        # Split the data into training and test sets
-        logger.info("Splitting data into train and test sets")
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_sparse, y, 
-            test_size=0.2, 
-            random_state=42,
-            stratify=None  # Can use stratify=pd.qcut(y, 5, duplicates='drop') if needed
-        )
-        
-        logger.info(f"Train set: {X_train.shape}, Test set: {X_test.shape}")
-        
-        # Check if we need to convert to dense
-        if isinstance(X_train, sparse.spmatrix) and tf.config.list_physical_devices('GPU'):
-            logger.info("Converting sparse matrices to dense for GPU training")
-            X_train_processed = X_train.toarray()
-            X_test_processed = X_test.toarray()
-        else:
-            # Keep as sparse for CPU training or if already dense
-            X_train_processed = X_train
-            X_test_processed = X_test
-            
-        return X_train_processed, y_train, X_test_processed, y_test
+def main():
+    """Main execution function."""
+    # Check if PyTorch GPU is available
     
-    def save_feature_importance(self, model, output_path=None):
-        """
-        Save feature importance scores from the model.
+    # Initialize FeatureEngineering class
+    model = FeatureEngineering(batch_size=10_000, max_features=7000, embedding_dim=100)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model.logger.info(f"Using device: {device}")
+    if torch.cuda.is_available():
+        model.logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+    
+    try:
+        # Load data and prepare embeddings
+        X_train, y_train, X_test, y_test, embedding_matrix, max_len = model.load_and_process_data()
         
-        Args:
-            model: Trained model
-            output_path: Path to save the scores (optional)
-        """
-        if output_path is None:
-            output_path = os.path.join(self.SAVE_DATA_DIR, "feature_importance.csv")
+        # Train and evaluate each model type separately
+        model_types = ['deep', 'stacked', 'ensemble']
+        results = {}
+        
+        for model_type in model_types:
+            self.logger.info(f"\n{'='*50}")
+            self.logger.info(f"Training {model_type.upper()} LSTM Model")            
+            self.logger.info(f"{'='*50}")
             
-        logger.info("Extracting feature importance")
-        
-        # Get feature names from vectorizer
+            # Train model with PyTorch
+            trained_model, history = model.train_model(
+                X_train, y_train, 
+                embedding_matrix, max_len,
+                model_type=model_type
+            )
+            
+            # Evaluate model
+            mse, mae, acc, y_pred = model.evaluate_model(
+                trained_model, X_test, y_test, 
+                model_type=model_type
+            )
+            
+            # Store results
+            results[model_type] = {
+                'mse': mse,
+                'mae': mae,
+                'accuracy': acc,
+                'precision': precision_score(np.round(y_test), np.round(y_pred), zero_division=0),
+                'recall': recall_score(np.round(y_test), np.round(y_pred), zero_division=0),
+                'f1': f1_score(np.round(y_test), np.round(y_pred), zero_division=0)
+            }
+            
+            # Save model and results
+            model_path = os.path.join(model.SAVE_DATA_DIR, f"sentiment_model_v2{model_type}.pth")
+            torch.save(trained_model.state_dict(), model_path)
+            
+            model.generate_model_dashboard(results[model_type], model_type=model_type)
+                  # Clear memory
+            del trained_model
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        sparse_matrices = sparse.vstack(sparse_matrices)
         feature_names = self.vectorizer.get_feature_names_out()
-        
-        # Get weights from the first layer
-        weights = model.layers[0].get_weights()[0]
-        
-        # Create a DataFrame with feature names and weights
-        importance_df = pd.DataFrame({
-            'feature': feature_names,
-            'importance': np.abs(weights.mean(axis=1))
-        })
-        
-        # Sort by importance
-        importance_df = importance_df.sort_values('importance', ascending=False)
-        
-        # Save to CSV
-        importance_df.to_csv(output_path, index=False)
-        logger.info(f"Feature importance saved to {output_path}")
-        
-        return importance_df.head(20)  # Return top 20 features for inspection
+        bow_df = pd.DataFrame.sparse.from_spmatrix(sparse_matrices, columns=feature_names)
 
+        self.bow_df = bow_df
+        return bow_df
 
-def main():
-    """Main execution function."""
-    # Enable memory growth for GPU if available
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        try:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logger.info(f"GPU(s) detected: {len(gpus)}")
-        except Exception as e:
-            logger.warning(f"Error setting GPU memory growth: {e}")
+    def save_to_parquet(self, df, output_path: str = "processed_data.parquet") -> None:
+        """Save the processed DataFrame to Parquet with gzip compression"""
+        self.self.logger.info("SAVING TO PARQUET STARTED..")
+        self.print_section("SAVING TO PARQUET STARTED..")
+
+        # Check if DataFrame has sparse data
+        has_sparse = hasattr(df, 'sparse') and hasattr(df.sparse, 'to_dense')
     
-    # Initialize FeatureEngineering class
-    model = FeatureEngineering(batch_size=10_000, max_features=7000)
+        if has_sparse:
+            # Convert sparse DataFrame to dense
+            dense_df = df.sparse.to_dense()
+        else:
+            self.self.logger.warning("Input DataFrame does not contain sparse data.")
+            dense_df = df
     
-    try:
-        # Load data and process TF-IDF
-        X_train, y_train, X_test, y_test = model.load_and_process_data()
-        
-        # Train the model
-        trained_model = model.train_model(X_train, y_train)
-        
-        # Evaluate the model with comprehensive metrics
-        loss, mae, y_pred = model.evaluate_model(trained_model, X_test, y_test)
-
-        
-        # Create interactive dashboard
-        dashboard_path = model.build_interactive_dashboard(
-            trained_model, X_test, y_test, y_pred
-        )
-        logger.info(f"Interactive dashboard created at: {dashboard_path}")
-        
-        # Save the model
-        model_path = os.path.join(model.SAVE_DATA_DIR, "sentiment_model_final.h5")
-        trained_model.save(model_path)
-        logger.info(f"Model saved to {model_path}")
-        
-        # Save feature importance
-        top_features = model.save_feature_importance(trained_model)
-        logger.info(f"Top features:\n{top_features}")
-        
-    except Exception as e:
-        logger.error(f"Error in processing: {e}", exc_info=True)
-        raise
-
-
-
-def main():
-    """Main execution function."""
-    # Enable memory growth for GPU if available
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        try:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logger.info(f"GPU(s) detected: {len(gpus)}")
-        except Exception as e:
-            logger.warning(f"Error setting GPU memory growth: {e}")
+        # Ensure the output directory exists
+        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
     
-    # Initialize FeatureEngineering class
-    model = FeatureEngineering(batch_size=10_000, max_features=7000)
-    
-    try:
-        # Load data and process TF-IDF
-        X_train, y_train, X_test, y_test = model.load_and_process_data()
-        
-        # Train the model
-        trained_model = model.train_model(X_train, y_train)
-        
-        # Evaluate the model with comprehensive metrics
-        loss, mae, y_pred = model.evaluate_model(trained_model, X_test, y_test)
-        
-        # Create interactive dashboard
-        dashboard_path = model.build_interactive_dashboard(
-            trained_model, X_test, y_test, y_pred
-        )
-        logger.info(f"Interactive dashboard created at: {dashboard_path}")
-        
-        # Save the model
-        model_path = os.path.join(model.SAVE_DATA_DIR, "sentiment_model_final.h5")
-        trained_model.save(model_path)
-        logger.info(f"Model saved to {model_path}")
-        
-        # Save feature importance
-        top_features = model.save_feature_importance(trained_model)
-        logger.info(f"Top features:\n{top_features}")
-        
-    except Exception as e:
-        logger.error(f"Error in processing: {e}", exc_info=True)
-        raise
+        # Save to Parquet format with gzip compression
+        dense_df.to_parquet(f"{output_path}.parquet.gz", compression="gzip")
+
+        self.self.logger.info(f"DF SAVED TO {output_path}.parquet.gz")
+
+        return output_path
+
+
+       
+
 
 if __name__ == "__main__":
     main()
