@@ -32,6 +32,14 @@ models_dir = os.path.join(save_data_dir, "models")
 embedding_processor = None
 model_builder = None
 
+# Model loading status tracking
+model_loading_status = {
+    'simple': False,
+    'deep': False,
+    'stacked': False,
+    'ensemble': False
+}
+
 def load_components():
     """Initialize necessary components for model testing"""
     global embedding_processor, model_builder
@@ -93,16 +101,15 @@ def predict_single(text, model_type='simple', load_best=True):
         )
         
         # Move model to CPU and set to evaluation mode
-        device = torch.device('cpu')
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model.to(device)
         model.eval()
         
         # Make prediction
         with torch.no_grad():
             output = model(X)
-            # Get the scalar value and then clamp between 1-5
-            output_value = output.item()
-            prediction = max(1.0, min(5.0, output_value))
+            predicted_class = torch.argmax(output, dim=1).item()  # 0-4
+            prediction = predicted_class + 1  # Convert to 1-5 stars
             
         return float(prediction)
     except Exception as e:
@@ -206,18 +213,87 @@ def predict_csv_endpoint():
         logger.error(f"Error in predict_csv endpoint: {e}\n{error_details}")
         return jsonify({'error': str(e), 'details': error_details}), 500
 
-@app.before_first_request
-def initialize_components():
-    """Ensure components are loaded before handling the first request"""
-    global embedding_processor, model_builder
-    if embedding_processor is None or model_builder is None:
-        load_components()
+def load_all_models():
+    """Load all models to ensure they're available before starting"""
+    try:
+        logger.info("Pre-loading all models...")
+        model_types = ['simple', 'deep', 'stacked', 'ensemble']
+        load_options = [True, False]  # best and latest
+        
+        # Get embedding matrix size for models
+        vocab_size = embedding_processor.max_features + 1
+        embedding_dim = embedding_processor.embedding_dim
+        
+        all_loaded_successfully = True
+        
+        for model_type in model_types:
+            model_loading_status[model_type] = False
+            try:
+                # Try to load both best and latest versions
+                for load_best in load_options:
+                    logger.info(f"Loading model: {model_type} (best={load_best})")
+                    model = model_builder.load_model(
+                        input_size=vocab_size,
+                        embedding_dim=embedding_dim,
+                        model_type=model_type,
+                        load_best=load_best
+                    )
+                    if model is None:
+                        logger.warning(f"Model {model_type} (best={load_best}) could not be loaded")
+                        all_loaded_successfully = False
+                        break
+                
+                # If we got here without breaking, the model was loaded successfully
+                model_loading_status[model_type] = True
+                logger.info(f"Model {model_type} loaded successfully")
+                
+            except Exception as e:
+                logger.error(f"Failed to load model {model_type}: {e}")
+                model_loading_status[model_type] = False
+                all_loaded_successfully = False
+        
+        if all_loaded_successfully:
+            logger.info("All models loaded successfully")
+        else:
+            logger.warning("Some models could not be loaded")
+            
+        return all_loaded_successfully
+    except Exception as e:
+        logger.error(f"Error during model preloading: {e}")
+        return False
+
+def init_server():
+    """Initialize server components and models"""
+    if not load_components():
+        logger.error("Failed to load required components. Exiting.")
+        return False
+        
+    if not load_all_models():
+        logger.error("Failed to load all required models. Exiting.")
+        return False
+        
+    logger.info("Server initialization complete")
+    return True
+
+# Server healthcheck endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Endpoint for server health check"""
+    all_models_loaded = all(model_loading_status.values())
+    return jsonify({
+        'status': 'ok',
+        'components_loaded': embedding_processor is not None and model_builder is not None,
+        'models_loaded': all_models_loaded,
+        'models': model_loading_status
+    })
 
 if __name__ == '__main__':
-    # Load necessary components
-    if load_components():
+    # Initialize server before running
+    if init_server():
         # Run the Flask app
         port = int(os.environ.get("PORT", 8000))
+        logger.info(f"Starting server on port {port}")
         app.run(host='0.0.0.0', port=port, debug=True)
     else:
-        print("Failed to initialize components, server cannot start.")
+        logger.critical("Server initialization failed. Cannot start server.")
+        sys.exit(1)
