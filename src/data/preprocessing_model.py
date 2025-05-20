@@ -15,7 +15,8 @@ import string
 from textblob import TextBlob
 from bs4 import BeautifulSoup
 import spacy
-from langdetect import detect
+from langdetect import detect, DetectorFactory
+from langdetect.lang_detect_exception import LangDetectException
 import emoji
 from concurrent.futures import ProcessPoolExecutor, TimeoutError
 import cProfile
@@ -30,6 +31,15 @@ from functools import partial
 import re
 import os
 import sys
+from collections import Counter
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import hashlib
+from dateutil import parser as date_parser
+import unicodedata
+
+# Set seed for language detection to ensure consistent results
+DetectorFactory.seed = 42
 
 # Download necessary NLTK resources if not already downloaded
 try:
@@ -69,13 +79,208 @@ def get_wordnet_pos(word, tag):
     return tag_dict.get(tag[0].upper(), wordnet.NOUN)
 
 
+def normalize_text(text):
+    """
+    Perform advanced text normalization including unicode normalization
+    and handling of special character representations
+    """
+    if not text or pd.isna(text):
+        return ""
+    
+    # Convert to string and lowercase
+    text = str(text).lower()
+    
+    # Normalize unicode characters
+    text = unicodedata.normalize('NFKC', text)
+    
+    # Fix common encoding issues
+    text = text.replace('â€™', "'")
+    text = text.replace('â€œ', '"')
+    text = text.replace('â€', '"')
+    text = text.replace('â€"', '—')
+    text = text.replace('â€"', '-')
+    
+    return text
+
+
+def normalize_numbers_and_dates(text):
+    """
+    Normalize numbers, dates, and measurements in text while preserving meaning
+    """
+    if not text or pd.isna(text):
+        return ""
+    
+    # Normalize number formats (e.g., 1,000,000 -> 1000000)
+    text = re.sub(r'(\d),(\d)', r'\1\2', text)
+    
+    # Normalize decimal formats (e.g., "0.5" and "0,5" -> "0.5")
+    text = re.sub(r'(\d),(\d)', r'\1.\2', text)
+    
+    # Normalize date formats to ISO format where possible
+    date_patterns = [
+        # MM/DD/YYYY or DD/MM/YYYY
+        r'\b(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})\b',
+        # Month name, day, year
+        r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* (\d{1,2}),? (\d{4})\b'
+    ]
+    
+    for pattern in date_patterns:
+        dates = re.findall(pattern, text)
+        for date_match in dates:
+            try:
+                # Try to parse the date
+                date_str = ' '.join(date_match).strip()
+                parsed_date = date_parser.parse(date_str)
+                # Replace with a standardized format
+                text = text.replace(date_str, parsed_date.strftime('%Y-%m-%d'))
+            except:
+                # If parsing fails, keep original
+                pass
+    
+    # Normalize common measurements
+    # E.g., "5 kg", "5kg", "5kilos" -> "5 kilograms"
+    measurement_patterns = {
+        r'(\d+\.?\d*)\s*(kg|kgs|kilos?)\b': r'\1 kilograms',
+        r'(\d+\.?\d*)\s*(g|grams?)\b': r'\1 grams',
+        r'(\d+\.?\d*)\s*(lb|lbs|pounds?)\b': r'\1 pounds',
+        r'(\d+\.?\d*)\s*(km|kms|kilometers?)\b': r'\1 kilometers',
+        r'(\d+\.?\d*)\s*(m|meters?)\b': r'\1 meters',
+        r'(\d+\.?\d*)\s*(cm|centimeters?)\b': r'\1 centimeters',
+        r'(\d+\.?\d*)\s*(mm|millimeters?)\b': r'\1 millimeters',
+        r'(\d+\.?\d*)\s*(mi|miles?)\b': r'\1 miles',
+        r'(\d+\.?\d*)\s*(ft|feet|foot)\b': r'\1 feet',
+        r'(\d+\.?\d*)\s*(in|inch|inches)\b': r'\1 inches'
+    }
+    
+    for pattern, replacement in measurement_patterns.items():
+        text = re.sub(pattern, replacement, text)
+    
+    return text
+
+
+def compute_text_quality_score(text, lang='en'):
+    """
+    Compute a quality score for text based on various heuristics
+    
+    Args:
+        text (str): The text to evaluate
+        lang (str): Expected language code
+        
+    Returns:
+        float: Quality score between 0 (poor) and 1 (excellent)
+    """
+    if not text or pd.isna(text):
+        return 0.0
+    
+    text = str(text)
+    score = 1.0
+    
+    # Check text length
+    if len(text) < 5:
+        score *= 0.5
+    elif len(text) < 20:
+        score *= 0.8
+    
+    # Check word count
+    words = text.split()
+    if len(words) < 3:
+        score *= 0.6
+    
+    # Check for repetitive characters (e.g., "aaaaa")
+    for char in set(text):
+        if char * 4 in text:
+            score *= 0.7
+            break
+    
+    # Check capital letter ratio
+    if len(text) > 0:
+        capital_ratio = sum(1 for c in text if c.isupper()) / len(text)
+        if capital_ratio > 0.5:
+            score *= 0.8  # Too many capital letters is usually poor quality
+    
+    # Check for unusual punctuation patterns
+    punct_count = sum(1 for c in text if c in string.punctuation)
+    if len(text) > 0 and punct_count / len(text) > 0.3:
+        score *= 0.7
+    
+    # Check language if text is long enough
+    if len(text) > 20:
+        try:
+            detected_lang = detect(text)
+            if detected_lang != lang:
+                score *= 0.6
+        except LangDetectException:
+            score *= 0.8
+    
+    # Penalize very short sentences
+    sentences = sent_tokenize(text)
+    avg_sent_len = np.mean([len(s) for s in sentences]) if sentences else 0
+    if avg_sent_len < 15:
+        score *= 0.9
+    
+    # Ensure score is between 0 and 1
+    return max(0.0, min(1.0, score))
+
+
+def compute_text_hash(text):
+    """
+    Compute a hash for text to identify duplicates
+    
+    Args:
+        text (str): Text to hash
+        
+    Returns:
+        str: Hash of the text
+    """
+    if not text or pd.isna(text):
+        return ""
+    
+    # Normalize text before hashing to find near duplicates
+    text = str(text).lower().strip()
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Create hash
+    return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+
+def is_near_duplicate(text1, text2, threshold=0.9):
+    """
+    Check if two texts are near duplicates using cosine similarity
+    
+    Args:
+        text1 (str): First text
+        text2 (str): Second text
+        threshold (float): Similarity threshold (0-1)
+        
+    Returns:
+        bool: True if texts are near duplicates
+    """
+    if not text1 or not text2 or pd.isna(text1) or pd.isna(text2):
+        return False
+    
+    # For very short texts, use direct comparison
+    if len(text1) < 20 or len(text2) < 20:
+        return text1.strip() == text2.strip()
+    
+    # For longer texts, use TF-IDF and cosine similarity
+    vectorizer = TfidfVectorizer()
+    try:
+        tfidf_matrix = vectorizer.fit_transform([text1, text2])
+        similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+        return similarity >= threshold
+    except:
+        # Fallback if vectorization fails
+        return False
+
+
 class PreprocessingModel(NlpModel):
     __slots__ = [
         "SAVE_DATA_DIR", "STATS_DIR", "df", "patterns", 
         "word_replacements", "lemmatizer", "stemmer", "tweet_tokenizer",
         "custom_stop_words", "use_lemmatization", "use_stemming", 
         "preserve_negation", "preserve_named_entities", "preserve_numbers",
-        "correct_spelling", "advanced_tokenization", "use_spacy"
+        "correct_spelling", "advanced_tokenization", "use_spacy",
+        "remove_duplicates", "min_quality_score", "technical_terms"
     ]
 
     def __init__(self, 
@@ -86,7 +291,10 @@ class PreprocessingModel(NlpModel):
                  preserve_numbers=True,
                  correct_spelling=True,
                  advanced_tokenization=True,
-                 use_spacy=True):
+                 use_spacy=True,
+                 remove_duplicates=True,
+                 min_quality_score=0.6,
+                 domain_specific_terms=None):
         """
         Initialize the preprocessing model with configurable options
         
@@ -99,6 +307,9 @@ class PreprocessingModel(NlpModel):
             correct_spelling (bool): Whether to apply spelling correction
             advanced_tokenization (bool): Whether to use advanced tokenization
             use_spacy (bool): Whether to use spaCy for advanced NLP tasks
+            remove_duplicates (bool): Whether to identify and remove near-duplicate texts
+            min_quality_score (float): Minimum quality score for texts (0-1)
+            domain_specific_terms (list): List of domain-specific terms to preserve
         """
         super().__init__()
         self.SAVE_DATA_DIR = os.path.join(self.BASE_DIR, "data")
@@ -114,6 +325,8 @@ class PreprocessingModel(NlpModel):
         self.correct_spelling = correct_spelling
         self.advanced_tokenization = advanced_tokenization
         self.use_spacy = use_spacy
+        self.remove_duplicates = remove_duplicates
+        self.min_quality_score = min_quality_score
         
         # Initialize NLP tools
         self.lemmatizer = WordNetLemmatizer() if use_lemmatization else None
@@ -130,18 +343,50 @@ class PreprocessingModel(NlpModel):
             'special_chars': re.compile(r"[^\w\s]"),
             'email': re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
             'user_mentions': re.compile(r'@\w+'),
-            'hashtags': re.compile(r'#\w+')
+            'hashtags': re.compile(r'#\w+'),
+            'repeated_chars': re.compile(r'(.)\1{3,}'),  # Repeated characters like "aaaaa"
+            'emoji_pattern': re.compile(r':[a-z_]+:')
         }
         
         # Enhance word replacements dictionary
         self.word_replacements = {**SLANG_DICT, **CONTRACTIONS_DICT}
+        
+        # Add common technical abbreviations
+        technical_abbr = {
+            'api': 'application programming interface',
+            'ai': 'artificial intelligence',
+            'ml': 'machine learning',
+            'nlp': 'natural language processing',
+            'db': 'database',
+            'sql': 'structured query language',
+            'os': 'operating system',
+            'ui': 'user interface',
+            'ux': 'user experience',
+            'css': 'cascading style sheets',
+            'html': 'hypertext markup language',
+            'js': 'javascript',
+            'py': 'python'
+        }
+        self.word_replacements.update(technical_abbr)
+        
+        # Add domain-specific terms to preserve
+        self.technical_terms = set([
+            'api', 'javascript', 'python', 'database', 'server', 'client',
+            'interface', 'function', 'algorithm', 'neural', 'network',
+            'data', 'machine', 'learning', 'artificial', 'intelligence',
+            'framework', 'library', 'system', 'cloud', 'computing', 'model'
+        ])
+        
+        # Add custom domain-specific terms if provided
+        if domain_specific_terms:
+            self.technical_terms.update([term.lower() for term in domain_specific_terms])
         
         # Define custom stop words
         self.custom_stop_words = set(stopwords.words('english'))
         
         # Remove negation words from stopwords if needed
         if self.preserve_negation:
-            negation_words = {'no', 'not', 'nor', 'neither', 'never', 'none'}
+            negation_words = {'no', 'not', 'nor', 'neither', 'never', 'none', 'wasn\'t', 'hasn\'t', 'hadn\'t', 'doesn\'t', 'don\'t', 'didn\'t', 'isn\'t', 'aren\'t', 'won\'t', 'wouldn\'t', 'couldn\'t', 'shouldn\'t'}
             self.custom_stop_words = self.custom_stop_words - negation_words
     
     def _count_pattern_matches(self, pattern_name: str, df) -> tuple:
@@ -204,6 +449,11 @@ class PreprocessingModel(NlpModel):
             if token.like_num and not self.preserve_numbers:
                 continue
                 
+            # Keep technical terms intact
+            if token.text.lower() in self.technical_terms:
+                tokens.append(token.text.lower())
+                continue
+                
             # Include lemma or original token
             tokens.append(token.lemma_ if self.use_lemmatization else token.text)
         
@@ -221,13 +471,18 @@ class PreprocessingModel(NlpModel):
         if not text or pd.isna(text):
             return "", [], [], {}
         
-        text = str(text).lower()
+        # Apply text normalization for Unicode and special characters
+        text = normalize_text(text)
         
         # Convert emojis to text
         text = emoji.demojize(text)
         
         # Clean HTML content more effectively
-        text = BeautifulSoup(text, "html.parser", features="lxml").get_text()
+        text = BeautifulSoup(text, "html.parser").get_text()
+        
+        # Normalize numbers, dates, and measurements
+        if self.preserve_numbers:
+            text = normalize_numbers_and_dates(text)
         
         # Remove URLs, emails, user mentions
         text = self.patterns['url'].sub(' ', text)
@@ -245,6 +500,9 @@ class PreprocessingModel(NlpModel):
         # Add back hashtags without the # symbol if they represent meaningful content
         for tag in hashtags:
             text += f" {tag[1:]} "
+        
+        # Fix repeated characters (e.g., "aaaaa" -> "aa")
+        text = self.patterns['repeated_chars'].sub(r'\1\1', text)
         
         # Normalize whitespace
         text = " ".join(text.split())
@@ -265,18 +523,26 @@ class PreprocessingModel(NlpModel):
         else:
             tokens = word_tokenize(text)
         
-        # Apply POS tagging for better lemmatization if needed
-        if self.use_lemmatization:
-            pos_tags = nltk.pos_tag(tokens)
-            tokens = [self.lemmatizer.lemmatize(word, get_wordnet_pos(word, tag)) 
-                    for word, tag in pos_tags]
+        # Preserve technical terms
+        final_tokens = []
+        for token in tokens:
+            if token.lower() in self.technical_terms:
+                final_tokens.append(token.lower())
+                continue
+                
+            # Apply POS tagging for better lemmatization if needed
+            if self.use_lemmatization:
+                pos_tags = nltk.pos_tag([token])
+                lemmatized = self.lemmatizer.lemmatize(token, get_wordnet_pos(token, pos_tags[0][1]))
+                final_tokens.append(lemmatized)
+            # Apply stemming if needed (not recommended with lemmatization)
+            elif self.use_stemming:
+                final_tokens.append(self.stemmer.stem(token))
+            else:
+                final_tokens.append(token)
         
-        # Apply stemming if needed (not recommended with lemmatization)
-        elif self.use_stemming:
-            tokens = [self.stemmer.stem(word) for word in tokens]
-        
-        # Remove stopwords while preserving negation words if configured
-        tokens = [token for token in tokens 
+        # Remove stopwords while preserving special terms
+        tokens = [token for token in final_tokens 
                 if token not in self.custom_stop_words]
         
         # Get sentences
@@ -287,12 +553,15 @@ class PreprocessingModel(NlpModel):
         
         # Correct spelling if enabled
         if self.correct_spelling:
-            processed_text = str(TextBlob(processed_text).correct())
-            # Re-tokenize after spelling correction
-            if self.advanced_tokenization:
-                tokens = self.tweet_tokenizer.tokenize(processed_text)
-            else:
-                tokens = word_tokenize(processed_text)
+            try:
+                processed_text = str(TextBlob(processed_text).correct())
+                # Re-tokenize after spelling correction
+                if self.advanced_tokenization:
+                    tokens = self.tweet_tokenizer.tokenize(processed_text)
+                else:
+                    tokens = word_tokenize(processed_text)
+            except:
+                self.logger.warning("Spelling correction failed, using original tokens")
         
         # No entities in non-spaCy mode
         entities = {}
@@ -305,7 +574,7 @@ class PreprocessingModel(NlpModel):
         
         texts, preprocessor = args
         if len(texts) == 0:
-            return [], [], [], []
+            return [], [], [], [], []
         
         if isinstance(texts, list):
             texts = pd.Series(texts)
@@ -314,19 +583,24 @@ class PreprocessingModel(NlpModel):
         tokenized = np.empty(len(texts), dtype=object)
         sentence_tokenized = np.empty(len(texts), dtype=object)
         entities = np.empty(len(texts), dtype=object)
+        quality_scores = np.empty(len(texts), dtype=float)
         
         for i in range(len(texts)):
-            text = str(texts.iloc[i]).lower()
+            text = str(texts.iloc[i])
             
             # Process text using the preprocessor's method
             processed_text, tokens, sentences, ents = preprocessor._process_text(text)
+            
+            # Compute quality score
+            quality_score = compute_text_quality_score(processed_text)
             
             processed[i] = processed_text
             tokenized[i] = tokens
             sentence_tokenized[i] = sentences
             entities[i] = ents
+            quality_scores[i] = quality_score
             
-        return processed.tolist(), tokenized.tolist(), sentence_tokenized.tolist(), entities.tolist()
+        return processed.tolist(), tokenized.tolist(), sentence_tokenized.tolist(), entities.tolist(), quality_scores.tolist()
    
     @staticmethod
     def _replace_words(text, word_replacements):
@@ -342,16 +616,36 @@ class PreprocessingModel(NlpModel):
             return PreprocessingModel._process_chunk(args)
         except Exception as e:
             print(f"Error in worker process: {e}")
-            return [], [], [], []
+            return [], [], [], [], []
         
     def preprocess_dataframe(self) -> None:
-        """Main preprocessing pipeline with improved parallelization"""
+        """Main preprocessing pipeline with improved parallelization and quality filtering"""
         self.logger.info("PREPROCESSING STARTED..")
         self.print_section("PREPROCESSING STARTED..")
         
         if self.df is None or self.df.empty or 'Text' not in self.df.columns:
             self.logger.error("DataFrame or 'Text' column is empty. Aborting preprocessing.")
             return
+        
+        # Step 1: Calculate text hashes for duplicate detection if enabled
+        if self.remove_duplicates:
+            self.logger.info("Calculating text hashes for duplicate detection")
+            console.print("[bold cyan]Calculating text hashes for duplicate detection...[/bold cyan]")
+            
+            self.df['Text_hash'] = self.df['Text'].apply(compute_text_hash)
+            
+            # Remove exact duplicates
+            hash_counts = self.df['Text_hash'].value_counts()
+            duplicated_hashes = hash_counts[hash_counts > 1].index.tolist()
+            
+            if duplicated_hashes:
+                dup_mask = self.df['Text_hash'].isin(duplicated_hashes)
+                dup_count = dup_mask.sum()
+                self.logger.info(f"Found {dup_count} exact duplicates")
+                console.print(f"[bold yellow]Found {dup_count} exact duplicates[/bold yellow]")
+                
+                # Keep only the first occurrence of each duplicate
+                self.df = self.df.drop_duplicates(subset='Text_hash')
         
         # Determine processing approach based on data size
         if len(self.df) > 10000:  # For large datasets, use chunked approach
@@ -376,17 +670,19 @@ class PreprocessingModel(NlpModel):
                 tokenized_texts = []
                 sentence_tokenized_texts = []
                 entities_list = []
+                quality_scores = []
                 
                 for future in track(futures, description="Processing chunks..."):
                     try:
                         # Add a timeout to prevent hanging processes
                         result = future.result(timeout=300)  
                         if result and all(result):
-                            proc_chunk, token_chunk, sent_chunk, ent_chunk = result
+                            proc_chunk, token_chunk, sent_chunk, ent_chunk, quality_chunk = result
                             processed_texts.extend(proc_chunk)
                             tokenized_texts.extend(token_chunk)
                             sentence_tokenized_texts.extend(sent_chunk)
                             entities_list.extend(ent_chunk)
+                            quality_scores.extend(quality_chunk)
                     except TimeoutError:
                         self.logger.warning("A worker process timed out and will be skipped")
                         console.print("[bold yellow]A worker process timed out and will be skipped[/bold yellow]")
@@ -405,6 +701,9 @@ class PreprocessingModel(NlpModel):
             
             # Unpack results
             processed_texts, tokenized_texts, sentence_tokenized_texts, entities_list = zip(*results)
+            
+            # Calculate quality scores
+            quality_scores = [compute_text_quality_score(text) for text in processed_texts]
         
         # Create new DataFrame columns
         new_data = {
@@ -414,7 +713,8 @@ class PreprocessingModel(NlpModel):
             'Entities': entities_list,
             'Token_count': [len(tokens) for tokens in tokenized_texts],
             'Sentence_count': [len(sentences) for sentences in sentence_tokenized_texts],
-            'Text_length': [len(text) for text in processed_texts]
+            'Text_length': [len(text) for text in processed_texts],
+            'Quality_score': quality_scores
         }
         
         # Add sentiment analysis if TextBlob is available
@@ -429,6 +729,15 @@ class PreprocessingModel(NlpModel):
         # Preserve original columns and add new ones
         preserve_columns = ['Id', 'Score', 'Summary'] if all(col in self.df.columns for col in ['Id', 'Score', 'Summary']) else []
         self.df = self.df[preserve_columns].assign(**new_data) if preserve_columns else pd.DataFrame(new_data)
+        
+        # Filter out low-quality texts
+        if self.min_quality_score > 0:
+            low_quality_count = (self.df['Quality_score'] < self.min_quality_score).sum()
+            self.logger.info(f"Filtering out {low_quality_count} low-quality texts")
+            console.print(f"[bold yellow]Filtering out {low_quality_count} low-quality texts[/bold yellow]")
+            
+            # Replace low-quality texts with empty string
+            self.df.loc[self.df['Quality_score'] < self.min_quality_score, 'Text'] = ''
             
         # Final cleanup
         gc.collect()
@@ -446,7 +755,7 @@ class PreprocessingModel(NlpModel):
                 return True  # Keep very short texts
             try:
                 return detect(str(text)) == 'en'
-            except:
+            except LangDetectException:
                 return True  # Keep texts where language detection fails
         
         # Using swifter for parallelized language detection
@@ -480,7 +789,7 @@ class PreprocessingModel(NlpModel):
         console.print(f"[bold green]Saved Parquet file to: {output_path}[/bold green]")
 
     def perform_feature_engineering(self):
-        """Perform basic feature engineering on preprocessed data"""
+        """Perform advanced feature engineering on preprocessed data"""
         if self.df is None or self.df.empty:
             self.logger.error("DataFrame is empty. Cannot perform feature engineering.")
             return
@@ -497,7 +806,7 @@ class PreprocessingModel(NlpModel):
             lambda x: np.mean([len(word) for word in str(x).split()]) if x else 0
         )
         
-        # Text complexity features (if TextBlob is available)
+        # Text complexity features
         try:
             # Lexical diversity (unique words / total words)
             self.df['Lexical_diversity'] = self.df['Tokens'].apply(
@@ -507,8 +816,52 @@ class PreprocessingModel(NlpModel):
             # Named entity count
             if 'Entities' in self.df.columns:
                 self.df['Entity_count'] = self.df['Entities'].apply(len)
-        except:
-            self.logger.warning("Some feature engineering steps failed")
+                
+            # Create POS tag distributions
+            if self.use_spacy:
+                self.logger.info("Generating POS tag distributions")
+                
+                def get_pos_distribution(text):
+                    if not text or pd.isna(text):
+                        return {}
+                    
+                    doc = nlp(str(text))
+                    pos_counts = Counter([token.pos_ for token in doc])
+                    total = sum(pos_counts.values())
+                    
+                    if total == 0:
+                        return {}
+                    
+                    return {pos: count/total for pos, count in pos_counts.items()}
+                
+                # Apply to a sample of texts to avoid memory issues
+                sample_size = min(1000, len(self.df))
+                sample_idx = np.random.choice(len(self.df), sample_size, replace=False)
+                
+                for i in sample_idx:
+                    pos_dist = get_pos_distribution(self.df.iloc[i]['Text'])
+                    
+                    # Add POS distribution features
+                    for pos, value in pos_dist.items():
+                        col_name = f'POS_{pos}'
+                        if col_name not in self.df.columns:
+                            self.df[col_name] = 0.0
+                        self.df.at[i, col_name] = value
+            
+            # Extract n-grams
+            self.logger.info("Extracting n-grams")
+            
+            def extract_ngrams(tokens, n=2):
+                if not tokens or len(tokens) < n:
+                    return []
+                return [' '.join(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+            
+            # Extract bigrams and trigrams
+            self.df['Bigrams'] = self.df['Tokens'].apply(lambda x: extract_ngrams(x, 2))
+            self.df['Trigrams'] = self.df['Tokens'].apply(lambda x: extract_ngrams(x, 3))
+            
+        except Exception as e:
+            self.logger.warning(f"Some feature engineering steps failed: {e}")
         
         console.print("[bold green]Feature engineering completed[/bold green]")
         return self.df
@@ -528,6 +881,8 @@ class PreprocessingModel(NlpModel):
         summary.add_row("Spelling Correction", str(self.correct_spelling))
         summary.add_row("Advanced Tokenization", str(self.advanced_tokenization))
         summary.add_row("Use spaCy", str(self.use_spacy))
+        summary.add_row("Remove Duplicates", str(self.remove_duplicates))
+        summary.add_row("Min Quality Score", str(self.min_quality_score))
         
         # Add processing results if available
         if self.df is not None and not self.df.empty:
@@ -536,11 +891,72 @@ class PreprocessingModel(NlpModel):
                 summary.add_row("Avg Token Count", f"{self.df['Token_count'].mean():.2f}")
             if 'Sentence_count' in self.df.columns:
                 summary.add_row("Avg Sentence Count", f"{self.df['Sentence_count'].mean():.2f}")
+            if 'Quality_score' in self.df.columns:
+                summary.add_row("Avg Quality Score", f"{self.df['Quality_score'].mean():.3f}")
             if 'Sentiment' in self.df.columns:
                 summary.add_row("Avg Sentiment", f"{self.df['Sentiment'].mean():.3f}")
+            if 'Lexical_diversity' in self.df.columns:
+                summary.add_row("Avg Lexical Diversity", f"{self.df['Lexical_diversity'].mean():.3f}")
         
         console.print(summary)
-
+        
+    def find_similar_texts(self, threshold=0.8, sample_size=1000):
+        """
+        Find similar texts in the dataset using TF-IDF and cosine similarity
+        
+        Args:
+            threshold (float): Similarity threshold (0-1)
+            sample_size (int): Number of texts to sample for comparison
+            
+        Returns:
+            pd.DataFrame: DataFrame with similar text pairs
+        """
+        if self.df is None or self.df.empty:
+            self.logger.error("DataFrame is empty. Cannot find similar texts.")
+            return pd.DataFrame()
+            
+        self.logger.info(f"Finding similar texts with threshold {threshold}")
+        console.print(f"[bold cyan]Finding similar texts with threshold {threshold}...[/bold cyan]")
+        
+        # Sample texts to keep computation manageable
+        sample_size = min(sample_size, len(self.df))
+        sample_indices = np.random.choice(len(self.df), sample_size, replace=False)
+        sample_texts = self.df.iloc[sample_indices]['Text'].tolist()
+        
+        # Vectorize texts
+        vectorizer = TfidfVectorizer(min_df=2, max_df=0.95)
+        try:
+            tfidf_matrix = vectorizer.fit_transform(sample_texts)
+        except:
+            self.logger.error("Vectorization failed. Check text content.")
+            return pd.DataFrame()
+        
+        # Compute pairwise cosine similarity
+        similarity_matrix = cosine_similarity(tfidf_matrix)
+        
+        # Find similar pairs
+        similar_pairs = []
+        for i in range(len(sample_texts)):
+            for j in range(i+1, len(sample_texts)):
+                if similarity_matrix[i, j] >= threshold:
+                    similar_pairs.append({
+                        'Index1': sample_indices[i],
+                        'Index2': sample_indices[j],
+                        'Text1': sample_texts[i],
+                        'Text2': sample_texts[j],
+                        'Similarity': similarity_matrix[i, j]
+                    })
+        
+        if not similar_pairs:
+            self.logger.info("No similar text pairs found.")
+            console.print("[bold yellow]No similar text pairs found.[/bold yellow]")
+            return pd.DataFrame()
+        
+        similar_df = pd.DataFrame(similar_pairs)
+        self.logger.info(f"Found {len(similar_df)} similar text pairs.")
+        console.print(f"[bold green]Found {len(similar_df)} similar text pairs.[/bold green]")
+        
+        return similar_df
 
 if __name__ == "__main__":
     with cProfile.Profile() as profile:
@@ -553,7 +969,10 @@ if __name__ == "__main__":
             preserve_numbers=True,
             correct_spelling=True,
             advanced_tokenization=True,
-            use_spacy=True  # Set to False for faster but less accurate processing
+            use_spacy=True,  # Set to False for faster but less accurate processing
+            remove_duplicates=True,
+            min_quality_score=0.6,
+            domain_specific_terms=['nlp', 'dataset', 'preprocessing', 'tokenization', 'sentiment']
         )
         
         console.print("[bold cyan]DataFrame shape:[/bold cyan]", model.df.shape)
@@ -571,12 +990,21 @@ if __name__ == "__main__":
         model.preprocess_dataframe()
         elapsed = timeit.default_timer() - start_time
 
+        # Remove non-English text
+        model.remove_foreign_words()
+        
+        # Perform feature engineering
+        model.perform_feature_engineering()
+        
+        # Find similar texts
+        similar_texts = model.find_similar_texts(threshold=0.85, sample_size=500)
+        if not similar_texts.empty:
+            console.print("[bold cyan]Sample of similar text pairs:[/bold cyan]")
+            console.print(similar_texts.head(3))
+        
         # Save to multiple formats
         model.save_to_csv(output_path=OUTPUT_CSV)
         model.save_to_parquet(output_path=OUTPUT_PARQUET)
-
-        # Perform feature engineering
-        model.perform_feature_engineering()
         
         # Load processed data and get statistics
         cleaned_df = pd.read_csv(OUTPUT_CSV)
