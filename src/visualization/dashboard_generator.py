@@ -1,5 +1,7 @@
 from src.core.common_imports import * # noqa: F403, F405
 from src.core.logging_config import *  # noqa: F403, F405
+from src.data.data_processing import DataProcessor
+from src.visualization.model_comparison import ModelComparison
 
 import os
 import logging
@@ -38,6 +40,9 @@ class DashboardGenerator:
         Returns:
             str: Path to the generated dashboard
         """
+        # First, generate rating visualizations
+        rating_viz = self.generate_rating_visualizations()
+        
         # Extract metrics
         mse = model_results.get('mse', 0)
         mae = model_results.get('mae', 0)
@@ -56,6 +61,12 @@ class DashboardGenerator:
         true_vs_pred_b64 = self.image_to_base64(os.path.join(self.metrics_dir, f'true_vs_pred_{model_type}.png'))
         distribution_plot_b64 = self.image_to_base64(os.path.join(self.metrics_dir, f'distribution_plot_{model_type}.png'))
         training_history_b64 = self.image_to_base64(os.path.join(self.metrics_dir, f'training_history_{model_type}.png'))
+        
+        # Convert rating visualization images to base64
+        word_frequency_b64 = self.image_to_base64(rating_viz.get('word_frequency', ''))
+        review_length_b64 = self.image_to_base64(rating_viz.get('review_length', ''))
+        wordclouds_b64 = self.image_to_base64(rating_viz.get('wordclouds', ''))
+        sentiment_distribution_b64 = self.image_to_base64(rating_viz.get('sentiment_distribution', ''))
         
         # HTML template
         html_content = f'''<!DOCTYPE html>
@@ -133,6 +144,13 @@ class DashboardGenerator:
                     h2 {{
                         color: #4a86e8;
                     }}
+                    .section-header {{
+                        color: #4a86e8;
+                        padding: 10px 0;
+                        margin-top: 30px;
+                        margin-bottom: 20px;
+                        border-bottom: 2px solid #4a86e8;
+                    }}
                     @media (max-width: 768px) {{
                         .metric-item {{
                             width: 48%;
@@ -197,6 +215,7 @@ class DashboardGenerator:
                         </div>
                     </div>
                     
+                    <h2 class="section-header">Model Performance Visualizations</h2>
                     <div class="charts-container">
                         <div class="chart-box">
                             <h2>Actual vs Predicted Ratings</h2>
@@ -213,6 +232,26 @@ class DashboardGenerator:
                         <div class="chart-box full-width">
                             <h2>Training History</h2>
                             <img src="data:image/png;base64,{training_history_b64}">
+                        </div>
+                    </div>
+                    
+                    <h2 class="section-header">Review Analysis by Rating</h2>
+                    <div class="charts-container">
+                        <div class="chart-box full-width">
+                            <h2>Sentiment Distribution</h2>
+                            <img src="data:image/png;base64,{sentiment_distribution_b64}">
+                        </div>
+                        <div class="chart-box full-width">
+                            <h2>Word Frequency by Rating</h2>
+                            <img src="data:image/png;base64,{word_frequency_b64}">
+                        </div>
+                        <div class="chart-box">
+                            <h2>Review Length by Rating</h2>
+                            <img src="data:image/png;base64,{review_length_b64}">
+                        </div>
+                        <div class="chart-box">
+                            <h2>Word Clouds by Rating</h2>
+                            <img src="data:image/png;base64,{wordclouds_b64}">
                         </div>
                     </div>
                     
@@ -239,6 +278,21 @@ class DashboardGenerator:
             self.generate_combined_dashboard()
         
         return dashboard_path
+    
+    def generate_rating_visualizations(self):
+        """
+        Generate visualizations based on ratings
+        
+        Returns:
+            dict: Paths to generated visualizations
+        """
+        self.logger.info("Generating rating visualizations")
+        
+        # Create a DataProcessor instance to generate the visualizations
+        data_processor = DataProcessor()
+        
+        # Generate and return the visualizations
+        return data_processor.generate_rating_visualizations()
     
     def image_to_base64(self, image_path):
         """
@@ -279,6 +333,15 @@ class DashboardGenerator:
         
         # Get current timestamp
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Generate rating visualizations
+        rating_viz = self.generate_rating_visualizations()
+        
+        # Convert rating visualization images to base64
+        word_frequency_b64 = self.image_to_base64(rating_viz.get('word_frequency', ''))
+        review_length_b64 = self.image_to_base64(rating_viz.get('review_length', ''))
+        wordclouds_b64 = self.image_to_base64(rating_viz.get('wordclouds', ''))
+        sentiment_distribution_b64 = self.image_to_base64(rating_viz.get('sentiment_distribution', ''))
         
         # HTML for combined dashboard
         html_content = f'''<!DOCTYPE html>
@@ -346,6 +409,33 @@ class DashboardGenerator:
                     .comparison-table tr:hover {{
                         background-color: #f5f5f5;
                     }}
+                    .section-header {{
+                        color: #4a86e8;
+                        padding: 10px 0;
+                        margin-top: 30px;
+                        margin-bottom: 20px;
+                        border-bottom: 2px solid #4a86e8;
+                    }}
+                    .charts-container {{
+                        display: flex;
+                        flex-wrap: wrap;
+                        justify-content: space-between;
+                    }}
+                    .chart-box {{
+                        width: 48%;
+                        margin-bottom: 20px;
+                        background-color: #f9f9f9;
+                        border-radius: 5px;
+                        padding: 15px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    .chart-box img {{
+                        width: 100%;
+                        height: auto;
+                    }}
+                    .full-width {{
+                        width: 100%;
+                    }}
                     .footer {{
                         margin-top: 20px;
                         text-align: center;
@@ -364,6 +454,38 @@ class DashboardGenerator:
                     <div class="comparison-box">
                         <h2>Model Performance Comparison</h2>
                         {comparison_table}
+                    </div>
+                    
+                    <h2 class="section-header">Model Performance Visualizations</h2>
+                    <div class="charts-container">
+                        <div class="chart-box full-width">
+                            <h2>Performance Metrics Comparison</h2>
+                            <img src="data:image/png;base64,{metrics_comparison_b64}">
+                        </div>
+                        <div class="chart-box full-width">
+                            <h2>Training History Comparison</h2>
+                            <img src="data:image/png;base64,{history_comparison_b64}">
+                        </div>
+                    </div>
+                    
+                    <h2 class="section-header">Review Analysis by Rating</h2>
+                    <div class="charts-container">
+                        <div class="chart-box full-width">
+                            <h2>Sentiment Distribution</h2>
+                            <img src="data:image/png;base64,{sentiment_distribution_b64}">
+                        </div>
+                        <div class="chart-box full-width">
+                            <h2>Word Frequency by Rating</h2>
+                            <img src="data:image/png;base64,{word_frequency_b64}">
+                        </div>
+                        <div class="chart-box">
+                            <h2>Review Length by Rating</h2>
+                            <img src="data:image/png;base64,{review_length_b64}">
+                        </div>
+                        <div class="chart-box">
+                            <h2>Word Clouds by Rating</h2>
+                            <img src="data:image/png;base64,{wordclouds_b64}">
+                        </div>
                     </div>
                     
                     <div class="comparison-box">
@@ -385,10 +507,237 @@ class DashboardGenerator:
             </html>'''
         
         # Write HTML to file
-        dashboard_path = os.path.join(self.metrics_dir, 'model_dashboard.html')
+        dashboard_path = os.path.join(self.metrics_dir, 'model_comparison_dashboard.html')
         with open(dashboard_path, 'w') as f:
             f.write(html_content)
         
-        self.logger.info(f"Combined model dashboard generated at {dashboard_path}")
+        self.logger.info(f"Model comparison dashboard generated at {dashboard_path}")
+        return dashboard_path
+    
+    def generate_model_comparison_dashboard(self, model_results=None, model_names=None):
+        """
+        Generate a dashboard comparing all available models
         
+        Args:
+            model_results (list, optional): List of dictionaries containing model metrics
+            model_names (list, optional): List of model names corresponding to the results
+            
+        Returns:
+            str: Path to the generated dashboard
+        """
+        self.logger.info("Generating model comparison dashboard")
+        
+        # Create model comparison instance
+        model_comparison = ModelComparison(save_data_dir=self.SAVE_DATA_DIR)
+        
+        # If model_results and model_names are provided, use them
+        # Otherwise load metrics from files
+        if model_results and model_names and len(model_results) == len(model_names):
+            self.logger.info(f"Using provided model results for {len(model_results)} models")
+            
+            # Convert to DataFrame
+            metrics_df = pd.DataFrame()
+            for i, (results, name) in enumerate(zip(model_results, model_names)):
+                model_df = pd.DataFrame([results])
+                model_df['model_type'] = name
+                metrics_df = pd.concat([metrics_df, model_df], ignore_index=True)
+        else:
+            # Load metrics for all models from files
+            self.logger.info("Loading model metrics from files")
+            metrics_df = model_comparison.load_model_metrics()
+        
+        if metrics_df.empty:
+            self.logger.warning("No model metrics available for comparison")
+            return None
+        
+        # Create comparison table
+        comparison_table = model_comparison.create_comparison_table(metrics_df)
+        
+        # Create comparison visualizations
+        viz_paths = model_comparison.create_comparison_visualizations()
+        
+        # Generate rating visualizations for the dashboard
+        rating_viz = self.generate_rating_visualizations()
+        
+        # Convert visualization images to base64
+        metrics_comparison_b64 = ""
+        history_comparison_b64 = ""
+        
+        if 'model_comparison_metrics' in viz_paths:
+            metrics_comparison_b64 = self.image_to_base64(viz_paths['model_comparison_metrics'])
+        
+        if 'model_comparison_history' in viz_paths:
+            history_comparison_b64 = self.image_to_base64(viz_paths['model_comparison_history'])
+        
+        # Convert rating visualization images to base64
+        word_frequency_b64 = self.image_to_base64(rating_viz.get('word_frequency', ''))
+        review_length_b64 = self.image_to_base64(rating_viz.get('review_length', ''))
+        wordclouds_b64 = self.image_to_base64(rating_viz.get('wordclouds', ''))
+        sentiment_distribution_b64 = self.image_to_base64(rating_viz.get('sentiment_distribution', ''))
+        
+        # Get current timestamp
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # HTML for comparison dashboard
+        html_content = f'''<!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Model Comparison Dashboard</title>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        line-height: 1.6;
+                        margin: 0;
+                        padding: 20px;
+                        color: #333;
+                    }}
+                    .container {{
+                        max-width: 1200px;
+                        margin: 0 auto;
+                    }}
+                    .header {{
+                        background-color: #4a86e8;
+                        color: white;
+                        padding: 20px;
+                        text-align: center;
+                        border-radius: 5px;
+                        margin-bottom: 20px;
+                    }}
+                    .comparison-box {{
+                        background-color: #f9f9f9;
+                        border-radius: 5px;
+                        padding: 15px;
+                        margin-bottom: 15px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    .section-header {{
+                        color: #4a86e8;
+                        padding: 10px 0;
+                        margin-top: 30px;
+                        margin-bottom: 20px;
+                        border-bottom: 2px solid #4a86e8;
+                    }}
+                    .comparison-table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin: 15px 0;
+                    }}
+                    .comparison-table th, .comparison-table td {{
+                        padding: 10px;
+                        text-align: center;
+                        border-bottom: 1px solid #ddd;
+                    }}
+                    .comparison-table th {{
+                        background-color: #e8f4f8;
+                        color: #333;
+                    }}
+                    .comparison-table tr:hover {{
+                        background-color: #f5f5f5;
+                    }}
+                    .charts-container {{
+                        display: flex;
+                        flex-wrap: wrap;
+                        justify-content: space-between;
+                    }}
+                    .chart-box {{
+                        width: 48%;
+                        margin-bottom: 20px;
+                        background-color: #f9f9f9;
+                        border-radius: 5px;
+                        padding: 15px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    .chart-box img {{
+                        width: 100%;
+                        height: auto;
+                    }}
+                    .full-width {{
+                        width: 100%;
+                    }}
+                    .model-links {{
+                        display: flex;
+                        justify-content: space-around;
+                        margin: 20px 0;
+                    }}
+                    .model-link {{
+                        display: inline-block;
+                        padding: 10px 15px;
+                        background-color: #4a86e8;
+                        color: white;
+                        text-decoration: none;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }}
+                    .footer {{
+                        margin-top: 20px;
+                        text-align: center;
+                        color: #666;
+                        font-size: 0.9em;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>Sentiment Analysis Model Comparison</h1>
+                        <p>Comparative analysis of all trained models</p>
+                    </div>
+                    
+                    <div class="comparison-box">
+                        <h2>Model Performance Metrics</h2>
+                        {comparison_table}
+                    </div>
+                    
+                    <h2 class="section-header">Model Performance Comparison</h2>
+                    <div class="charts-container">
+                        {'<div class="chart-box full-width"><h2>Performance Metrics Comparison</h2><img src="data:image/png;base64,' + metrics_comparison_b64 + '"></div>' if metrics_comparison_b64 else ''}
+                        {'<div class="chart-box full-width"><h2>Training History Comparison</h2><img src="data:image/png;base64,' + history_comparison_b64 + '"></div>' if history_comparison_b64 else ''}
+                    </div>
+                    
+                    <h2 class="section-header">Review Analysis by Rating</h2>
+                    <div class="charts-container">
+                        <div class="chart-box full-width">
+                            <h2>Sentiment Distribution</h2>
+                            <img src="data:image/png;base64,{sentiment_distribution_b64}">
+                        </div>
+                        <div class="chart-box full-width">
+                            <h2>Word Frequency by Rating</h2>
+                            <img src="data:image/png;base64,{word_frequency_b64}">
+                        </div>
+                        <div class="chart-box">
+                            <h2>Review Length by Rating</h2>
+                            <img src="data:image/png;base64,{review_length_b64}">
+                        </div>
+                        <div class="chart-box">
+                            <h2>Word Clouds by Rating</h2>
+                            <img src="data:image/png;base64,{wordclouds_b64}">
+                        </div>
+                    </div>
+                    
+                    <div class="comparison-box">
+                        <h2>Individual Model Dashboards</h2>
+                        <p>Click on a model type to view its detailed dashboard:</p>
+                        <div class="model-links">
+                            <a href="model_dashboard_simple.html" class="model-link">Simple LSTM</a>
+                            <a href="model_dashboard_deep.html" class="model-link">Deep LSTM</a>
+                            <a href="model_dashboard_stacked.html" class="model-link">Stacked LSTM</a>
+                            <a href="model_dashboard_ensemble.html" class="model-link">Ensemble</a>
+                        </div>
+                    </div>
+                    
+                    <div class="footer">
+                        <p>Generated on: {timestamp}</p>
+                    </div>
+                </div>
+            </body>
+            </html>'''
+        
+        # Write HTML to file
+        dashboard_path = os.path.join(self.metrics_dir, 'model_comparison_dashboard.html')
+        with open(dashboard_path, 'w') as f:
+            f.write(html_content)
+        
+        self.logger.info(f"Model comparison dashboard generated at {dashboard_path}")
         return dashboard_path
