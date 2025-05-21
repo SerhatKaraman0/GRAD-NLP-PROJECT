@@ -37,6 +37,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import hashlib
 from dateutil import parser as date_parser
 import unicodedata
+import warnings
 
 # Set seed for language detection to ensure consistent results
 DetectorFactory.seed = 42

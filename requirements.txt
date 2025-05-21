@@ -9,7 +9,7 @@ gensim>=4.3.0
 langcodes>=3.3.0
 langdetect>=1.0.9
 nltk>=3.8.1
-spacy==3.7.2
+spacy>=3.7.2
 textblob>=0.17.1
 tokenizers>=0.13.3
 
@@ -20,7 +20,7 @@ networkx>=3.0
 numba>=0.56.4
 numpy>=1.22.0
 scikit-learn>=1.2.2
-scipy>=1.10.0
+scipy>=1.14.0
 seaborn>=0.12.2
 
 # Utility Libraries
