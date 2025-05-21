@@ -42,16 +42,20 @@ import unicodedata
 DetectorFactory.seed = 42
 
 # Download necessary NLTK resources if not already downloaded
-try:
-    nltk.data.find('tokenizers/punkt')
-    nltk.data.find('corpora/stopwords')
-    nltk.data.find('corpora/wordnet')
-    nltk.data.find('taggers/averaged_perceptron_tagger')
-except LookupError:
-    nltk.download('punkt')
-    nltk.download('stopwords')
-    nltk.download('wordnet')
-    nltk.download('averaged_perceptron_tagger')
+nltk_resources = [
+    'punkt',
+    'stopwords',
+    'wordnet',
+    'averaged_perceptron_tagger',
+    'punkt_tab'
+]
+
+for resource in nltk_resources:
+    try:
+        nltk.data.find(f'tokenizers/{resource}' if 'punkt' in resource else f'corpora/{resource}')
+    except LookupError:
+        print(f"Downloading {resource}...")
+        nltk.download(resource)
 
 # Load spaCy model for advanced NLP tasks
 try:
@@ -626,84 +630,99 @@ class PreprocessingModel(NlpModel):
         if self.df is None or self.df.empty or 'Text' not in self.df.columns:
             self.logger.error("DataFrame or 'Text' column is empty. Aborting preprocessing.")
             return
+            
+        # Store original length for alignment
+        original_length = len(self.df)
+        console.print(f"[bold cyan]Processing {original_length} texts...[/bold cyan]")
         
-        # Step 1: Calculate text hashes for duplicate detection if enabled
-        if self.remove_duplicates:
-            self.logger.info("Calculating text hashes for duplicate detection")
-            console.print("[bold cyan]Calculating text hashes for duplicate detection...[/bold cyan]")
-            
-            self.df['Text_hash'] = self.df['Text'].apply(compute_text_hash)
-            
-            # Remove exact duplicates
-            hash_counts = self.df['Text_hash'].value_counts()
-            duplicated_hashes = hash_counts[hash_counts > 1].index.tolist()
-            
-            if duplicated_hashes:
-                dup_mask = self.df['Text_hash'].isin(duplicated_hashes)
-                dup_count = dup_mask.sum()
-                self.logger.info(f"Found {dup_count} exact duplicates")
-                console.print(f"[bold yellow]Found {dup_count} exact duplicates[/bold yellow]")
-                
-                # Keep only the first occurrence of each duplicate
-                self.df = self.df.drop_duplicates(subset='Text_hash')
+        # Initialize empty lists for results
+        processed_texts = []
+        tokenized_texts = []
+        sentence_tokenized_texts = []
+        entities_list = []
+        quality_scores = []
         
         # Determine processing approach based on data size
-        if len(self.df) > 10000:  # For large datasets, use chunked approach
+        if len(self.df) > 10000:
+            # Adjust chunk size based on total size
             total_rows = len(self.df)
-            rows_per_chunk = 1000  # Adjust based on memory capacity
+            rows_per_chunk = min(5000, max(1000, total_rows // 20))  # Dynamic chunk size
             n_chunks = max(1, int(total_rows / rows_per_chunk))
             
             n_cores = os.cpu_count() or 4
             n_cores = min(n_cores, 8)
             
+            console.print(f"[bold cyan]Using {n_cores} cores to process {n_chunks} chunks...[/bold cyan]")
+            
             chunks = np.array_split(self.df['Text'], n_chunks)
             process_args = [(chunk, self) for chunk in chunks]
             
             with ProcessPoolExecutor(max_workers=n_cores) as executor:
-                # Create futures with map
                 futures = []
                 for args in process_args:
                     futures.append(executor.submit(PreprocessingModel.process_with_timeout, args))
                 
-                # Process results as they complete
-                processed_texts = []
-                tokenized_texts = []
-                sentence_tokenized_texts = []
-                entities_list = []
-                quality_scores = []
-                
-                for future in track(futures, description="Processing chunks..."):
-                    try:
-                        # Add a timeout to prevent hanging processes
-                        result = future.result(timeout=300)  
-                        if result and all(result):
-                            proc_chunk, token_chunk, sent_chunk, ent_chunk, quality_chunk = result
-                            processed_texts.extend(proc_chunk)
-                            tokenized_texts.extend(token_chunk)
-                            sentence_tokenized_texts.extend(sent_chunk)
-                            entities_list.extend(ent_chunk)
-                            quality_scores.extend(quality_chunk)
-                    except TimeoutError:
-                        self.logger.warning("A worker process timed out and will be skipped")
-                        console.print("[bold yellow]A worker process timed out and will be skipped[/bold yellow]")
-                    except Exception as e:
-                        self.logger.error(f"Error processing chunk: {e}")
-                        console.print(f"[bold red]Error processing chunk: {e}[/bold red]")
-                
-                # Force garbage collection
-                gc.collect()
+                # Process results with progress tracking
+                with console.status("[bold green]Processing chunks...") as status:
+                    for i, future in enumerate(futures, 1):
+                        try:
+                            chunk_results = future.result(timeout=300)
+                            if len(chunk_results) == 5:
+                                chunk_processed, chunk_tokens, chunk_sentences, chunk_entities, chunk_quality = chunk_results
+                                processed_texts.extend(chunk_processed)
+                                tokenized_texts.extend(chunk_tokens)
+                                sentence_tokenized_texts.extend(chunk_sentences)
+                                entities_list.extend(chunk_entities)
+                                quality_scores.extend(chunk_quality)
+                                console.print(f"[green]Completed chunk {i}/{n_chunks} ({(i/n_chunks)*100:.1f}%)[/green]")
+                            else:
+                                raise ValueError(f"Expected 5 values, got {len(chunk_results)}")
+                        except Exception as e:
+                            self.logger.error(f"Error processing chunk {i}/{n_chunks}: {e}")
+                            console.print(f"[red]Error in chunk {i}/{n_chunks}: {e}[/red]")
+                            # Add empty results for failed chunk
+                            chunk_size = len(chunks[i-1])
+                            processed_texts.extend([''] * chunk_size)
+                            tokenized_texts.extend([[] for _ in range(chunk_size)])
+                            sentence_tokenized_texts.extend([[] for _ in range(chunk_size)])
+                            entities_list.extend([{} for _ in range(chunk_size)])
+                            quality_scores.extend([0.0 for _ in range(chunk_size)])
         else:
-            # For smaller datasets, use swifter for parallelized apply
-            console.print("[bold yellow]Using swifter for parallel processing...[/bold yellow]")
-            
-            # Process texts and unpack results
-            results = self.df['Text'].swifter.progress_bar(True).apply(self._process_text)
-            
-            # Unpack results
-            processed_texts, tokenized_texts, sentence_tokenized_texts, entities_list = zip(*results)
-            
-            # Calculate quality scores
-            quality_scores = [compute_text_quality_score(text) for text in processed_texts]
+            # For smaller datasets, process directly with progress tracking
+            with console.status("[bold green]Processing texts...") as status:
+                for i, text in enumerate(self.df['Text'], 1):
+                    try:
+                        processed, tokens, sentences, entities = self._process_text(text)
+                        quality = compute_text_quality_score(processed)
+                        processed_texts.append(processed)
+                        tokenized_texts.append(tokens)
+                        sentence_tokenized_texts.append(sentences)
+                        entities_list.append(entities)
+                        quality_scores.append(quality)
+                        
+                        if i % 100 == 0:
+                            console.print(f"[green]Processed {i}/{len(self.df)} texts ({(i/len(self.df))*100:.1f}%)[/green]")
+                    except Exception as e:
+                        self.logger.error(f"Error processing text {i}/{len(self.df)}: {e}")
+                        processed_texts.append('')
+                        tokenized_texts.append([])
+                        sentence_tokenized_texts.append([])
+                        entities_list.append({})
+                        quality_scores.append(0.0)
+        
+        console.print("[bold cyan]Finalizing results...[/bold cyan]")
+        
+        # Ensure all lists have the same length as the original DataFrame
+        def pad_list(lst, target_length, default_value):
+            if len(lst) < target_length:
+                lst.extend([default_value for _ in range(target_length - len(lst))])
+            return lst[:target_length]
+        
+        processed_texts = pad_list(processed_texts, original_length, '')
+        tokenized_texts = pad_list(tokenized_texts, original_length, [])
+        sentence_tokenized_texts = pad_list(sentence_tokenized_texts, original_length, [])
+        entities_list = pad_list(entities_list, original_length, {})
+        quality_scores = pad_list(quality_scores, original_length, 0.0)
         
         # Create new DataFrame columns
         new_data = {
@@ -719,26 +738,26 @@ class PreprocessingModel(NlpModel):
         
         # Add sentiment analysis if TextBlob is available
         try:
+            console.print("[bold cyan]Adding sentiment analysis...[/bold cyan]")
             sentiment_scores = [TextBlob(text).sentiment.polarity for text in processed_texts]
             subjectivity_scores = [TextBlob(text).sentiment.subjectivity for text in processed_texts]
             new_data['Sentiment'] = sentiment_scores
             new_data['Subjectivity'] = subjectivity_scores
-        except:
-            self.logger.warning("TextBlob sentiment analysis failed, skipping sentiment features")
+        except Exception as e:
+            self.logger.warning(f"TextBlob sentiment analysis failed: {e}")
         
-        # Preserve original columns and add new ones
+        # Create new DataFrame with proper length alignment
+        console.print("[bold cyan]Creating final DataFrame...[/bold cyan]")
+        result_df = pd.DataFrame(new_data, index=range(original_length))
+        
+        # Preserve original columns if they exist
         preserve_columns = ['Id', 'Score', 'Summary'] if all(col in self.df.columns for col in ['Id', 'Score', 'Summary']) else []
-        self.df = self.df[preserve_columns].assign(**new_data) if preserve_columns else pd.DataFrame(new_data)
+        if preserve_columns:
+            for col in preserve_columns:
+                result_df[col] = self.df[col].values
         
-        # Filter out low-quality texts
-        if self.min_quality_score > 0:
-            low_quality_count = (self.df['Quality_score'] < self.min_quality_score).sum()
-            self.logger.info(f"Filtering out {low_quality_count} low-quality texts")
-            console.print(f"[bold yellow]Filtering out {low_quality_count} low-quality texts[/bold yellow]")
-            
-            # Replace low-quality texts with empty string
-            self.df.loc[self.df['Quality_score'] < self.min_quality_score, 'Text'] = ''
-            
+        self.df = result_df
+        
         # Final cleanup
         gc.collect()
         
