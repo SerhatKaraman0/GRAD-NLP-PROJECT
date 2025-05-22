@@ -2,7 +2,44 @@
 # filepath: /Users/user/Desktop/Projects/NLP-Learning/src/models/train_cnn_lstm.py
 
 """
-Training script for the CNNBiLSTMClassifier model.
+Training s            # Pad sequences to the same length
+            max_len = min(self.config['max_seq_length'], max(len(seq) for seq in X_sequences))
+            logger.info(f"Padding sequences to length: {max_len}")
+            
+            # Create a manual padding function using numpy
+            def pad_sequences(sequences, max_len, padding='post'):
+                padded_seqs = []
+                for seq in sequences:
+                    if len(seq) > max_len:
+                        padded_seq = seq[:max_len]
+                    else:
+                        if padding == 'post':
+                            padded_seq = np.concatenate([seq, np.zeros(max_len - len(seq), dtype=int)])
+                        else:  # pre padding
+                            padded_seq = np.concatenate([np.zeros(max_len - len(seq), dtype=int), seq])
+                    padded_seqs.append(padded_seq)
+                return np.array(padded_seqs)
+                
+            X_padded = pad_sequences(X_sequences, max_len, padding='post')
+            
+            # Split data
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_padded, y, 
+                test_size=self.config['validation_split'],
+                random_state=self.config['random_state'],
+                stratify=y
+            )
+            
+            # Create DataLoaders
+            train_dataset = TensorDataset(
+                torch.tensor(X_train, dtype=torch.long),
+                torch.tensor(y_train, dtype=torch.long)
+            )
+            
+            val_dataset = TensorDataset(
+                torch.tensor(X_val, dtype=torch.long),
+                torch.tensor(y_val, dtype=torch.long)
+            )iLSTMClassifier model.
 
 This script handles:
 1. Data loading and preprocessing
@@ -79,7 +116,7 @@ class CNNBiLSTMTrainer:
         Load and preprocess the data
         
         Returns:
-            tuple: Train and validation DataLoaders
+            tuple: Train and validation DataLoaders, vocab_size, embedding_matrix, and sequence length
         """
         logger.info("Loading data...")
         try:
@@ -110,9 +147,29 @@ class CNNBiLSTMTrainer:
             # Prepare target values (convert 1-5 scale to 0-4 for classification)
             y = df['Score'].values - 1
             
+            # Pad sequences to the same length
+            max_len = min(self.config['max_seq_length'], max(len(seq) for seq in X_sequences))
+            logger.info(f"Padding sequences to length: {max_len}")
+            
+            # Create a manual padding function using numpy
+            def pad_sequences(sequences, max_len, padding='post'):
+                padded_seqs = []
+                for seq in sequences:
+                    if len(seq) > max_len:
+                        padded_seq = seq[:max_len]
+                    else:
+                        if padding == 'post':
+                            padded_seq = np.concatenate([seq, np.zeros(max_len - len(seq), dtype=int)])
+                        else:  # pre padding
+                            padded_seq = np.concatenate([np.zeros(max_len - len(seq), dtype=int), seq])
+                    padded_seqs.append(padded_seq)
+                return np.array(padded_seqs)
+                
+            X_padded = pad_sequences(X_sequences, max_len, padding='post')
+            
             # Split data
             X_train, X_val, y_train, y_val = train_test_split(
-                X_sequences, y, 
+                X_padded, y, 
                 test_size=self.config['validation_split'],
                 random_state=self.config['random_state'],
                 stratify=y
@@ -141,7 +198,7 @@ class CNNBiLSTMTrainer:
             )
             
             logger.info(f"Data prepared: {len(train_dataset)} training samples, {len(val_dataset)} validation samples")
-            return train_loader, val_loader, embedding_processor.max_features, embedding_matrix
+            return train_loader, val_loader, embedding_processor.max_features, embedding_matrix, max_len
             
         except Exception as e:
             logger.error(f"Error loading data: {e}")
@@ -156,11 +213,11 @@ class CNNBiLSTMTrainer:
         """
         try:
             # Load data
-            train_loader, val_loader, vocab_size, embedding_matrix = self.load_data()
+            train_loader, val_loader, vocab_size, embedding_matrix, max_len = self.load_data()
             
             # Initialize model
             model = CNNBiLSTMClassifier(
-                input_size=self.config['max_seq_length'],
+                input_size=max_len,  # Use the actual padded sequence length
                 embedding_dim=self.config['embedding_dim'],
                 vocab_size=vocab_size + 1,  # +1 for padding token
                 num_classes=self.config['num_classes']
