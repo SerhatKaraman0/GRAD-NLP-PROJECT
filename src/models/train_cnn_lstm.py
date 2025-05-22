@@ -241,9 +241,24 @@ class CNNBiLSTMTrainer:
             
             model = model.to(self.device)
             
-            # Loss and optimizer
-            criterion = nn.CrossEntropyLoss()
-            optimizer = optim.Adam(model.parameters(), lr=self.config['learning_rate'])
+            # Loss and optimizer with better configuration
+            criterion = nn.CrossEntropyLoss(label_smoothing=0.1)  # Label smoothing helps generalization
+            optimizer = optim.AdamW(
+                model.parameters(), 
+                lr=self.config['learning_rate'],
+                weight_decay=0.01,  # L2 regularization
+                betas=(0.9, 0.999)
+            )
+            
+            # Learning rate scheduler
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=0.5,
+                patience=2,
+                min_lr=1e-6,
+                verbose=True
+            )
             
             # Track training history
             history = {
@@ -252,7 +267,8 @@ class CNNBiLSTMTrainer:
                 'train_accuracy': [],
                 'val_accuracy': [],
                 'best_val_loss': float('inf'),
-                'best_epoch': 0
+                'best_epoch': 0,
+                'learning_rates': []
             }
             
             # Early stopping counter
@@ -331,6 +347,12 @@ class CNNBiLSTMTrainer:
                            f'Train Acc: {epoch_train_acc:.4f}, '
                            f'Val Loss: {epoch_val_loss:.4f}, '
                            f'Val Acc: {epoch_val_acc:.4f}')
+                
+                # Track current learning rate
+                history['learning_rates'].append(optimizer.param_groups[0]['lr'])
+                
+                # Update learning rate scheduler
+                scheduler.step(epoch_val_loss)
                 
                 # Check for improvement
                 if epoch_val_loss < history['best_val_loss']:
