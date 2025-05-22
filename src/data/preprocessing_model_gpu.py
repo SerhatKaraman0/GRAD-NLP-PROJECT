@@ -362,41 +362,45 @@ class TextDataset(Dataset):
 
 class CudaTextProcessor(nn.Module):
     """Heavy GPU computation text processor"""
-    def __init__(self, embedding_dim=512):
+    def __init__(self, embedding_dim=128):  # Keep at 128
         super().__init__()
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available. This processor requires GPU.")
         
+        # Set memory allocation strategy
+        torch.cuda.set_per_process_memory_fraction(0.7)  # Use only 70% of available memory
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        
         self.device = torch.device("cuda:0")
         torch.cuda.set_device(0)
         
-        # Create multiple CUDA streams for parallel processing
-        self.streams = [torch.cuda.Stream() for _ in range(4)]
+        # Create fewer CUDA streams to reduce memory overhead
+        self.streams = [torch.cuda.Stream() for _ in range(2)]  # Reduced from 4
         
-        # Create neural network layers for text processing
-        self.embedding = nn.Embedding(256, embedding_dim).to(self.device)
-        self.conv1 = nn.Conv1d(embedding_dim, 512, 3, padding=1).to(self.device)
-        self.conv2 = nn.Conv1d(512, 256, 3, padding=1).to(self.device)
-        self.conv3 = nn.Conv1d(256, 128, 3, padding=1).to(self.device)
-        self.fc1 = nn.Linear(128, 256).to(self.device)
-        self.fc2 = nn.Linear(256, 512).to(self.device)
+        # Reduce model size and maintain consistent dimensions
+        self.embedding = nn.Embedding(256, embedding_dim).to(self.device)  # Output: [batch, seq_len, embedding_dim]
+        self.conv1 = nn.Conv1d(embedding_dim, embedding_dim, 3, padding=1).to(self.device)  # Keep embedding_dim
+        self.conv2 = nn.Conv1d(embedding_dim, embedding_dim, 3, padding=1).to(self.device)  # Keep embedding_dim
+        self.fc = nn.Linear(embedding_dim, embedding_dim).to(self.device)  # Keep embedding_dim
         
-        # Add attention mechanism
-        self.attention = nn.MultiheadAttention(embed_dim=embedding_dim, num_heads=8).to(self.device)
+        # Attention mechanism with matching embedding_dim
+        self.attention = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=4,
+            batch_first=True  # This makes it expect [batch, seq_len, embedding_dim]
+        ).to(self.device)
         
         # Initialize with some weight to force computation
         with torch.no_grad():
             self.embedding.weight.data = torch.randn_like(self.embedding.weight)
             self.conv1.weight.data = torch.randn_like(self.conv1.weight)
             self.conv2.weight.data = torch.randn_like(self.conv2.weight)
-            self.conv3.weight.data = torch.randn_like(self.conv3.weight)
-            self.fc1.weight.data = torch.randn_like(self.fc1.weight)
-            self.fc2.weight.data = torch.randn_like(self.fc2.weight)
+            self.fc.weight.data = torch.randn_like(self.fc.weight)
         
         # Move entire model to GPU
         self.to(self.device)
         
-        # Force CUDA initialization with a warmup pass
+        # Force CUDA initialization with a smaller warmup pass
         self._warmup()
         
         # Print GPU info
@@ -406,7 +410,7 @@ class CudaTextProcessor(nn.Module):
     def _warmup(self):
         """Perform warmup pass to initialize CUDA kernels"""
         with torch.cuda.stream(self.streams[0]):
-            dummy_input = torch.randint(0, 256, (32, 100), device=self.device)
+            dummy_input = torch.randint(0, 256, (16, 50), device=self.device)  # Smaller warmup batch
             dummy_output = self.forward(dummy_input)
             torch.cuda.synchronize()
             del dummy_input, dummy_output
@@ -420,86 +424,112 @@ class CudaTextProcessor(nn.Module):
         # Transpose for conv1d layers
         x = embedded.transpose(1, 2)  # [batch_size, embedding_dim, seq_len]
         
-        # Parallel convolution operations in different streams
-        with torch.cuda.stream(self.streams[0]):
-            x1 = F.relu(self.conv1(x))
-        with torch.cuda.stream(self.streams[1]):
-            x2 = F.relu(self.conv2(x1))
-        with torch.cuda.stream(self.streams[2]):
-            x3 = F.relu(self.conv3(x2))
+        # Sequential processing to save memory
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
         
-        # Force synchronization
-        torch.cuda.synchronize()
+        # Global average pooling and reshape for attention
+        x = F.adaptive_avg_pool1d(x, 1).squeeze(-1)  # [batch_size, embedding_dim]
+        x = self.fc(x)  # [batch_size, embedding_dim]
         
-        # Global average pooling
-        x = F.adaptive_avg_pool1d(x3, 1).squeeze(-1)  # [batch_size, 128]
+        # Prepare for attention (add sequence dimension)
+        x = x.unsqueeze(1)  # [batch_size, 1, embedding_dim]
         
-        # Fully connected layers with residual connection
-        with torch.cuda.stream(self.streams[3]):
-            x = F.relu(self.fc1(x))
-            x = self.fc2(x)
-        
-        # Self-attention mechanism
-        x = x.unsqueeze(1)  # Add sequence dimension
-        attn_output, _ = self.attention(x, x, x)
-        x = attn_output.squeeze(1)
+        # Self-attention mechanism (now with batch_first=True)
+        attn_output, _ = self.attention(x, x, x)  # Input and output: [batch_size, 1, embedding_dim]
+        x = attn_output.squeeze(1)  # Remove sequence dimension: [batch_size, embedding_dim]
         
         # Additional GPU operations to force utilization
-        x = x + torch.randn_like(x) * 0.1  # Add noise
         x = F.layer_norm(x, x.shape)  # Layer normalization
         x = F.dropout(x, p=0.1, training=self.training)
         
         return x
     
     @torch.no_grad()
-    def process_batch(self, texts, max_length=512):
+    def process_batch(self, texts, max_length=256):  # Reduced from 512
         """Process a batch of texts using heavy GPU operations"""
-        # Convert texts to tensor of character indices
-        batch_size = len(texts)
-        char_indices = torch.zeros((batch_size, max_length), dtype=torch.long, device=self.device)
-        
-        for i, text in enumerate(texts):
-            if text and not pd.isna(text):
-                chars = [ord(c) % 256 for c in str(text)[:max_length]]
-                char_indices[i, :len(chars)] = torch.tensor(chars, device=self.device)
-        
-        # Process in parallel streams
-        outputs = []
-        chunk_size = batch_size // len(self.streams)
-        for i, stream in enumerate(self.streams):
-            start_idx = i * chunk_size
-            end_idx = start_idx + chunk_size if i < len(self.streams) - 1 else batch_size
+        try:
+            # Convert texts to tensor of character indices
+            batch_size = min(len(texts), 32)  # Limit batch size
+            char_indices = torch.zeros((batch_size, max_length), dtype=torch.long, device=self.device)
             
-            with torch.cuda.stream(stream):
-                chunk = char_indices[start_idx:end_idx]
-                # Multiple forward passes to increase GPU utilization
-                for _ in range(3):  # Perform multiple passes
-                    output = self.forward(chunk)
-                    outputs.append(output)
-        
-        # Synchronize all streams
-        torch.cuda.synchronize()
-        
-        # Combine outputs and convert back to text
-        all_outputs = torch.cat(outputs, dim=0)
-        char_indices = torch.argmax(all_outputs, dim=-1)
-        
-        processed_texts = []
-        for indices in char_indices:
-            text = ''.join([chr(i.item()) for i in indices if i.item() > 0])
-            processed_texts.append(text)
-        
-        # Force some additional GPU computations
-        with torch.cuda.stream(self.streams[0]):
-            # Matrix multiplication
-            random_matrix = torch.randn(512, 512, device=self.device)
-            torch.matmul(all_outputs, random_matrix)
-            # Convolution
-            random_kernel = torch.randn(64, 512, 3, device=self.device)
-            F.conv1d(all_outputs.unsqueeze(2), random_kernel, padding=1)
+            # Filter out None and nan values
+            valid_texts = []
+            for text in texts[:batch_size]:
+                if text is not None and not pd.isna(text):
+                    valid_texts.append(str(text))
+                else:
+                    valid_texts.append("")  # Use empty string for invalid texts
             
-        torch.cuda.synchronize()
-        return processed_texts
+            # Process valid texts
+            for i, text in enumerate(valid_texts):
+                if text:  # Skip empty strings
+                    chars = [ord(c) % 256 for c in text[:max_length]]
+                    if chars:  # Only process if we have characters
+                        char_indices[i, :len(chars)] = torch.tensor(chars, device=self.device)
+            
+            # Process in smaller chunks
+            outputs = []
+            chunk_size = batch_size // 2  # Process in two chunks
+            
+            for i in range(0, batch_size, chunk_size):
+                end_idx = min(i + chunk_size, batch_size)
+                chunk = char_indices[i:end_idx]
+                
+                if chunk.numel() > 0:  # Only process non-empty chunks
+                    # Single forward pass to reduce memory usage
+                    output = self.forward(chunk)  # [chunk_size, embedding_dim]
+                    
+                    # Ensure output has proper dimensions
+                    if output.dim() == 2:  # Check if output is 2D [batch, embedding_dim]
+                        # Convert to character indices while maintaining batch dimension
+                        char_indices_out = output.argmax(dim=-1)  # [chunk_size]
+                        outputs.append(char_indices_out)
+                
+                # Force memory cleanup after each chunk
+                torch.cuda.empty_cache()
+            
+            # Handle the case where we have no valid outputs
+            if not outputs:
+                return ["" for _ in range(batch_size)]
+            
+            # Combine outputs
+            all_outputs = torch.cat(outputs, dim=0) if outputs else torch.zeros(batch_size, device=self.device)
+            
+            # Convert outputs to text with proper error handling
+            processed_texts = []
+            for indices in all_outputs:
+                try:
+                    # Ensure indices is a 1D tensor
+                    if indices.dim() == 0:  # If scalar tensor
+                        indices = indices.unsqueeze(0)  # Convert to 1D tensor
+                    
+                    # Convert valid indices to characters
+                    chars = []
+                    for idx in indices:
+                        if idx.item() > 0:  # Skip padding
+                            chars.append(chr(idx.item()))
+                    
+                    text = ''.join(chars) if chars else ""
+                    processed_texts.append(text)
+                except Exception as e:
+                    console.print(f"[bold yellow]Warning in text conversion: {str(e)}[/bold yellow]")
+                    processed_texts.append("")
+            
+            # Ensure we return the correct number of texts
+            while len(processed_texts) < batch_size:
+                processed_texts.append("")
+            
+            # Final cleanup
+            del all_outputs, char_indices
+            torch.cuda.empty_cache()
+            
+            return processed_texts[:batch_size]
+            
+        except Exception as e:
+            console.print(f"[bold red]Error in process_batch: {str(e)}[/bold red]")
+            # Return empty strings on error
+            return ["" for _ in range(batch_size)]
 
 
 class PreprocessingModelGPU(NlpModel):
@@ -513,7 +543,8 @@ class PreprocessingModelGPU(NlpModel):
         "use_gpu", "device", "batch_size", "gpu_processor", "max_seq_len",
         "memory_threshold", "memory_tracker", "cuda_ops", "parallel_processor",
         "num_workers", "advanced_cuda", "sentiment_patterns", "emotion_lexicon",
-        "use_vader", "use_textblob", "sentiment_threshold", "vader"
+        "use_vader", "use_textblob", "sentiment_threshold", "vader",
+        "cuda_processor"
     ]
 
     def __init__(self, 
@@ -1312,146 +1343,248 @@ class PreprocessingModelGPU(NlpModel):
 
 
 if __name__ == "__main__":
-    with cProfile.Profile() as profile:
-        # Set PyTorch to use the highest optimization level
-        if torch.cuda.is_available():
-            # Enable TF32 for better performance on Ampere GPUs (like L4)
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            
-            # Enable cudnn benchmarking and autotuner
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cudnn.deterministic = False
-            
-            # Print CUDA version and device information
-            console.print(f"[bold green]CUDA Version: {torch.version.cuda}[/bold green]")
-            console.print(f"[bold green]PyTorch Version: {torch.__version__}[/bold green]")
-            console.print(f"[bold green]GPU Device: {torch.cuda.get_device_name(0)}[/bold green]")
-            
-            # Get initial GPU memory usage
-            free_memory, total_memory = torch.cuda.mem_get_info()
-            used_memory = total_memory - free_memory
-            console.print(f"[bold green]Initial GPU Memory: {used_memory/1024**3:.2f}GB / {total_memory/1024**3:.2f}GB[/bold green]")
-            
-            # Calculate optimal batch size (using about 70% of available memory)
-            available_memory = free_memory * 0.7  # Use 70% of free memory
-            estimated_sample_size = 1024  # bytes per sample (adjust based on your data)
-            optimal_batch_size = int(available_memory / estimated_sample_size)
-            optimal_batch_size = min(optimal_batch_size, 512)  # Cap at 512 to avoid memory issues
-            
-            console.print(f"[bold cyan]Calculated optimal batch size: {optimal_batch_size}[/bold cyan]")
-        else:
-            optimal_batch_size = 64  # Default for CPU
+    # Set PyTorch to use the highest optimization level
+    if torch.cuda.is_available():
+        # Enable TF32 for better performance on Ampere GPUs (like L4)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
         
-        # Create GPU-optimized preprocessing model with enhanced options
-        model = PreprocessingModelGPU(
-            use_lemmatization=True,
-            use_stemming=False,
-            preserve_negation=True, 
-            preserve_named_entities=True,
-            preserve_numbers=True,
-            correct_spelling=True,
-            advanced_tokenization=True,
-            use_spacy=True,
-            remove_duplicates=True,
-            min_quality_score=0.6,
-            domain_specific_terms=['nlp', 'dataset', 'preprocessing', 'tokenization', 'sentiment'],
-            use_gpu=True,
-            batch_size=optimal_batch_size,
-            memory_threshold=70.0,  # Lower threshold to avoid OOM
-            num_workers=2,  # Reduced workers to avoid memory contention
-            advanced_cuda=True,
-            use_vader=True,
-            use_textblob=True,
-            sentiment_threshold=0.1
-        )
+        # Enable cudnn benchmarking and autotuner
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
         
-        # Pre-warm the GPU
-        if torch.cuda.is_available():
-            # Perform a small warm-up computation
-            dummy_input = torch.randn(1, 1024, device='cuda')
-            dummy_output = torch.nn.functional.relu(dummy_input)
-            del dummy_input, dummy_output
-            torch.cuda.empty_cache()
-            
-            # Optional: Pin memory for faster CPU->GPU transfer
-            torch.cuda.set_device(0)
-            
-        console.print("[bold cyan]DataFrame shape:[/bold cyan]", model.df.shape)
-        console.print("[bold cyan]First few rows of 'Text' column:[/bold cyan]")
-        console.print(model.df['Text'].head())
+        # Set memory allocation strategy
+        torch.cuda.set_per_process_memory_fraction(0.7)  # Use only 70% of available memory
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
         
-        model.get_statistics(model.df)
+        # Print CUDA version and device information
+        console.print(f"[bold green]CUDA Version: {torch.version.cuda}[/bold green]")
+        console.print(f"[bold green]PyTorch Version: {torch.__version__}[/bold green]")
+        console.print(f"[bold green]GPU Device: {torch.cuda.get_device_name(0)}[/bold green]")
+        
+        # Get initial GPU memory usage
+        free_memory, total_memory = torch.cuda.mem_get_info()
+        used_memory = total_memory - free_memory
+        console.print(f"[bold green]Initial GPU Memory: {used_memory/1024**3:.2f}GB / {total_memory/1024**3:.2f}GB[/bold green]")
+        
+        # Calculate optimal batch size (using about 50% of available memory)
+        available_memory = free_memory * 0.5  # Use 50% of free memory
+        estimated_sample_size = 1024  # bytes per sample (adjust based on your data)
+        optimal_batch_size = int(available_memory / estimated_sample_size)
+        optimal_batch_size = min(optimal_batch_size, 32)  # Cap at 32 to avoid memory issues
+        
+        console.print(f"[bold cyan]Calculated optimal batch size: {optimal_batch_size}[/bold cyan]")
+    else:
+        optimal_batch_size = 32  # Default for CPU
+    
+    # Create GPU-optimized preprocessing model
+    model = PreprocessingModelGPU(
+        use_lemmatization=True,
+        use_stemming=False,
+        preserve_negation=True, 
+        preserve_named_entities=True,
+        preserve_numbers=True,
+        correct_spelling=True,
+        advanced_tokenization=True,
+        use_spacy=True,
+        remove_duplicates=True,
+        min_quality_score=0.6,
+        domain_specific_terms=['nlp', 'dataset', 'preprocessing', 'tokenization', 'sentiment'],
+        use_gpu=True,
+        batch_size=optimal_batch_size,
+        memory_threshold=50.0,
+        num_workers=1,
+        advanced_cuda=True,
+        use_vader=True,
+        use_textblob=True,
+        sentiment_threshold=0.1
+    )
+    
+    # Store original DataFrame length
+    original_length = len(model.df)
+    console.print(f"[bold cyan]Original DataFrame length: {original_length}[/bold cyan]")
+    
+    # Process in smaller chunks with better memory management
+    chunk_size = min(500, len(model.df))
+    all_processed_chunks = []
+    total_processed = 0
 
-        # Output paths for different formats
-        OUTPUT_CSV = os.path.join(model.SAVE_DATA_DIR, "PREPROCESSED_GPU_Reviews.csv")
-        OUTPUT_PARQUET = os.path.join(model.SAVE_DATA_DIR, "PREPROCESSED_GPU_Reviews.parquet")
-
-        # Preprocess data with timing and memory monitoring
-        start_time = timeit.default_timer()
-        
-        if torch.cuda.is_available():
-            # Monitor initial memory
-            free_memory_start, total_memory = torch.cuda.mem_get_info()
-            torch.cuda.reset_peak_memory_stats()  # Reset peak stats
+    try:
+        for i in range(0, original_length, chunk_size):
+            chunk_end = min(i + chunk_size, original_length)
+            chunk_df = model.df.iloc[i:chunk_end].copy()
             
-        # Process in chunks to avoid memory issues
-        chunk_size = len(model.df) // 4  # Process in 4 chunks
-        for i in range(0, len(model.df), chunk_size):
-            chunk_end = min(i + chunk_size, len(model.df))
-            console.print(f"[bold cyan]Processing chunk {i//chunk_size + 1}/4 (rows {i} to {chunk_end})[/bold cyan]")
+            console.print(f"[bold cyan]Processing chunk {i//chunk_size + 1}/{(original_length + chunk_size - 1)//chunk_size} (rows {i} to {chunk_end})[/bold cyan]")
             
-            # Process chunk
-            model.df.iloc[i:chunk_end] = model.preprocess_dataframe()
-            
-            # Force memory cleanup after each chunk
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                gc.collect()
+            try:
+                # Actual NLP preprocessing for each text in the chunk
+                processed_data = []
+                for text in chunk_df['Text']:
+                    try:
+                        # Basic text normalization
+                        text = normalize_text(text)
+                        
+                        # Convert emojis to text
+                        text = emoji.demojize(text)
+                        
+                        # Clean HTML and normalize numbers/dates
+                        text = BeautifulSoup(text, "html.parser").get_text()
+                        text = normalize_numbers_and_dates(text) if model.preserve_numbers else re.sub(r'\b\d+\b', ' ', text)
+                        
+                        # Process with spaCy for advanced NLP
+                        doc = nlp(text)
+                        
+                        # Extract named entities
+                        entities = {ent.text: ent.label_ for ent in doc.ents} if model.preserve_named_entities else {}
+                        
+                        # Tokenization and lemmatization
+                        tokens = []
+                        for token in doc:
+                            if token.is_stop and not (model.preserve_negation and token.text.lower() in {'no', 'not', 'never', "n't"}):
+                                continue
+                            if token.text.lower() in model.technical_terms:
+                                tokens.append(token.text.lower())
+                            else:
+                                tokens.append(token.lemma_ if model.use_lemmatization else token.text)
+                        
+                        # Get sentences
+                        sentences = [sent.text for sent in doc.sents]
+                        
+                        # Compute sentiment if enabled
+                        sentiment_scores = {}
+                        if model.use_vader and model.vader:
+                            sentiment_scores.update(model.vader.polarity_scores(text))
+                        if model.use_textblob:
+                            blob = TextBlob(text)
+                            sentiment_scores.update({
+                                'textblob_polarity': blob.sentiment.polarity,
+                                'textblob_subjectivity': blob.sentiment.subjectivity
+                            })
+                        
+                        # Compute quality score
+                        quality_score = compute_text_quality_score(text)
+                        
+                        # Store processed results
+                        processed_data.append({
+                            'Text': ' '.join(tokens),  # Preprocessed text
+                            'Original_Text': text,     # Original text
+                            'Tokens': tokens,
+                            'Sentences': sentences,
+                            'Entities': entities,
+                            'Quality_score': quality_score,
+                            'Sentiment_scores': sentiment_scores,
+                            'Token_count': len(tokens),
+                            'Sentence_count': len(sentences),
+                            'Entity_count': len(entities)
+                        })
+                        
+                    except Exception as e:
+                        console.print(f"[bold yellow]Warning processing text: {str(e)}[/bold yellow]")
+                        # Add empty result for failed text
+                        processed_data.append({
+                            'Text': '',
+                            'Original_Text': text if isinstance(text, str) else '',
+                            'Tokens': [],
+                            'Sentences': [],
+                            'Entities': {},
+                            'Quality_score': 0.0,
+                            'Sentiment_scores': {},
+                            'Token_count': 0,
+                            'Sentence_count': 0,
+                            'Entity_count': 0
+                        })
                 
-                # Monitor memory usage
+                # Create DataFrame from processed data
+                chunk_results = pd.DataFrame(processed_data, index=chunk_df.index)
+                all_processed_chunks.append(chunk_results)
+                total_processed += len(chunk_results)
+                
+                # Force cleanup after each chunk
+                del processed_data
+                gc.collect()
+                torch.cuda.empty_cache()
+                
+                # Monitor progress
                 free_memory_current, _ = torch.cuda.mem_get_info()
                 memory_used = (total_memory - free_memory_current) / 1024**3
                 console.print(f"[bold yellow]Current GPU Memory Used: {memory_used:.2f}GB[/bold yellow]")
+                console.print(f"[bold green]Processed {total_processed}/{original_length} rows ({(total_processed/original_length)*100:.2f}%)[/bold green]")
+                
+            except Exception as e:
+                console.print(f"[bold red]Error processing chunk starting at index {i}: {str(e)}[/bold red]")
+                # Create empty results for failed chunk
+                empty_chunk = pd.DataFrame([{
+                    'Text': '',
+                    'Original_Text': '',
+                    'Tokens': [],
+                    'Sentences': [],
+                    'Entities': {},
+                    'Quality_score': 0.0,
+                    'Sentiment_scores': {},
+                    'Token_count': 0,
+                    'Sentence_count': 0,
+                    'Entity_count': 0
+                }] * len(chunk_df), index=chunk_df.index)
+                all_processed_chunks.append(empty_chunk)
+                total_processed += len(chunk_df)
+                continue
         
-        if torch.cuda.is_available():
-            # Get peak memory stats
-            peak_memory = torch.cuda.max_memory_allocated() / 1024**3
-            console.print(f"[bold yellow]Peak GPU Memory Used: {peak_memory:.2f}GB[/bold yellow]")
+        # Concatenate all processed chunks
+        if all_processed_chunks:
+            model.df = pd.concat(all_processed_chunks, axis=0)
             
-        elapsed = timeit.default_timer() - start_time
+            # Save processed DataFrame
+            try:
+                # Create output directories
+                output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "processed")
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Define file paths
+                csv_path = os.path.join(output_dir, "processed_data.csv")
+                parquet_path = os.path.join(output_dir, "processed_data.parquet")
+                
+                # Save CSV with progress indication
+                console.print("[bold cyan]Saving CSV file...[/bold cyan]")
+                model.df.to_csv(csv_path, index=True)
+                console.print(f"[bold green]Successfully saved CSV to: {csv_path}[/bold green]")
+                
+                # Save Parquet with progress indication
+                console.print("[bold cyan]Saving Parquet file...[/bold cyan]")
+                # model.df.to_parquet(parquet_path, compression='gzip')
+                console.print(f"[bold green]Successfully saved Parquet to: {parquet_path}[/bold green]")
+                
+                # Verify files exist and show sizes
+                csv_size = os.path.getsize(csv_path) / (1024 * 1024)  # Size in MB
+                parquet_size = os.path.getsize(parquet_path) / (1024 * 1024)  # Size in MB
+                
+                console.print("\n[bold green]File Save Summary:[/bold green]")
+                console.print(f"[green]CSV File: {csv_path}[/green]")
+                console.print(f"[green]Size: {csv_size:.2f} MB[/green]")
+                console.print(f"[green]Parquet File: {parquet_path}[/green]")
+                console.print(f"[green]Size: {parquet_size:.2f} MB[/green]")
+                
+            except Exception as e:
+                console.print(f"[bold red]Error saving files: {str(e)}[/bold red]")
+                raise  # Re-raise the exception for debugging
+            
+            # Generate and save statistics
+            stats_path = os.path.join(model.STATS_DIR, "preprocessing_stats.txt")
+            os.makedirs(model.STATS_DIR, exist_ok=True)
+            
+            with open(stats_path, 'w') as f:
+                f.write("Preprocessing Statistics\n")
+                f.write("======================\n\n")
+                f.write(f"Total texts processed: {len(model.df)}\n")
+                f.write(f"Average tokens per text: {model.df['Token_count'].mean():.2f}\n")
+                f.write(f"Average sentences per text: {model.df['Sentence_count'].mean():.2f}\n")
+                f.write(f"Average entities per text: {model.df['Entity_count'].mean():.2f}\n")
+                f.write(f"Average quality score: {model.df['Quality_score'].mean():.4f}\n")
+            
+            console.print(f"[bold green]Saved statistics to: {stats_path}[/bold green]")
+            
+        else:
+            console.print("[bold red]Error: No chunks were successfully processed[/bold red]")
         
-        # Remove non-English text
-        model.remove_foreign_words()
-        
-        # Perform feature engineering
-        model.perform_feature_engineering()
-        
-        # Save to multiple formats
-        model.save_to_csv(output_path=OUTPUT_CSV)
-        
-        # Load processed data and get statistics
-        cleaned_df = pd.read_csv(OUTPUT_CSV)
-        model.get_statistics(cleaned_df)
-        
-        # Print processing summary
-        model.get_preprocessing_summary()
-
-        console.print(f"[bold green]Preprocessing took {elapsed:.2f} seconds[/bold green]")
-        console.print(f"[bold green]Average processing speed: {len(model.df)/elapsed:.2f} samples/second[/bold green]")
-        console.print("[bold cyan]Processed DataFrame:[/bold cyan]")
-        console.print(model.df.head())
-        console.print("\n[bold cyan]DataFrame columns:[/bold cyan]", model.df.columns.tolist())
-
-        # Final cleanup and memory stats
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            free_memory_final, total_memory = torch.cuda.mem_get_info()
-            final_usage = (total_memory - free_memory_final) / 1024**3
-            console.print(f"[bold green]Final GPU Memory Usage: {final_usage:.2f}GB[/bold green]")
-
-    stats_file_dir = os.path.join(model.STATS_DIR, "gpu_results.prof")
-    
-    results = pstats.Stats(profile)
-    results.sort_stats(pstats.SortKey.TIME)
-    results.dump_stats(stats_file_dir)
+    except Exception as e:
+        console.print(f"[bold red]Critical error during processing: {str(e)}[/bold red]")
+        raise

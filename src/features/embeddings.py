@@ -41,6 +41,9 @@ class EmbeddingProcessor(DataProcessor):
         """
         self.logger.info("Preparing text embeddings...")
         
+        # Ensure all texts are strings
+        texts = [str(text) for text in texts]
+        
         # Create a tokenizer with limited vocabulary size
         tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=self.max_features)
         tokenizer.fit_on_texts(texts)

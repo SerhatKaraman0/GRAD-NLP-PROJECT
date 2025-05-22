@@ -100,6 +100,9 @@ class CNNBiLSTMTrainer:
                 embedding_dim=self.config['embedding_dim']
             )
             
+            # Convert all Text values to strings to prevent errors with non-string values
+            df['Text'] = df['Text'].astype(str)
+            
             # Convert text to sequences and get pre-trained embedding matrix
             X_sequences, embedding_matrix = embedding_processor.prepare_embeddings(df['Text'].tolist())
             logger.info(f"Embedding matrix shape: {embedding_matrix.shape}")
