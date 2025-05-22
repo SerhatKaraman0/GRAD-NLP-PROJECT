@@ -58,8 +58,10 @@ class GatedCNN(nn.Module):
         conved = self.conv(x)
         # Split channels for gating mechanism
         value, gate = torch.chunk(conved, 2, dim=1)
+        # Apply batch normalization to value path
         value = self.value_norm(value)
-        gate = self.gate_norm(F.glu(gate, dim=1))
+        # Apply sigmoid to gate path (don't use GLU here as it reduces dimensions again)
+        gate = self.gate_norm(gate)
         # Apply gating mechanism
         return value * torch.sigmoid(gate)
 
