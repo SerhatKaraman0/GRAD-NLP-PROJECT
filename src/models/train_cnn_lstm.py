@@ -225,7 +225,13 @@ class CNNBiLSTMTrainer:
             
             # Initialize embedding layer with pre-trained weights
             logger.info(f"Initializing embedding layer with pre-trained GloVe {self.config['embedding_dim']}d embeddings")
-            model.embedding.weight.data.copy_(torch.from_numpy(embedding_matrix))
+            
+            # Add a row of zeros at the beginning for the padding token (index 0)
+            padded_embedding_matrix = np.zeros((vocab_size + 1, self.config['embedding_dim']))
+            padded_embedding_matrix[1:] = embedding_matrix[:vocab_size]
+            
+            # Copy the padded embedding matrix to the model's embedding layer
+            model.embedding.weight.data.copy_(torch.from_numpy(padded_embedding_matrix))
             
             # Option to freeze the embedding layer
             freeze_embeddings = self.config.get('freeze_embeddings', False)
