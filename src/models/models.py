@@ -102,8 +102,8 @@ class CNNBiLSTMClassifier(nn.Module):
         # Embedding layer - will be initialized with pre-trained weights
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         
-        # Improved spatial dropout for better regularization
-        self.spatial_dropout = nn.Dropout2d(0.3)
+        # Improved spatial dropout for better regularization (increased from 0.3 to 0.4)
+        self.spatial_dropout = nn.Dropout2d(0.4)
         
         # Multiple CNN layers with different kernel sizes for capturing different n-gram features
         self.conv1d_3 = nn.Conv1d(in_channels=embedding_dim, out_channels=64, kernel_size=3, padding=1)
@@ -119,9 +119,9 @@ class CNNBiLSTMClassifier(nn.Module):
         # Attention mechanism
         self.attention = nn.Linear(400, 1)  # 200*2 due to bidirectional
         
-        # Deeper fully connected layers
-        self.dropout1 = nn.Dropout(0.5)
-        self.dropout2 = nn.Dropout(0.3)
+        # Deeper fully connected layers with increased dropout for regularization
+        self.dropout1 = nn.Dropout(0.6)  # Increased from 0.5 for better regularization
+        self.dropout2 = nn.Dropout(0.4)  # Increased from 0.3 for better regularization
         self.fc1 = nn.Linear(400, 128)  # 200*2 from bidirectional LSTM
         self.fc2 = nn.Linear(128, 64)
         self.fc3 = nn.Linear(64, num_classes)
