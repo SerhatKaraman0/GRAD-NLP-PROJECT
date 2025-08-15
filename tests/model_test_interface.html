@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NLP Model Testing Interface</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@2.5.0/fonts/remixicon.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            /* Modern color palette */
+            --primary: #6366f1;
+            --primary-light: #818cf8;
+            --primary-dark: #4f46e5;
+            --secondary: #38bdf8;
+            --success: #10b981;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --bg-light: #f1f5f9;
+            --bg-white: #ffffff;
+            --card-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+            --transition: all 0.3s ease;
+            --border-radius: 12px;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            line-height: 1.6;
+            color: var(--text-primary);
+            background-color: var(--bg-light);
+            transition: var(--transition);
+            min-height: 100vh;
+        }
+        
+        .page-wrapper {
+            max-width: 1240px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+            padding: 2.5rem 2rem;
+            border-radius: var(--border-radius);
+            margin-bottom: 24px;
+            text-align: center;
+            box-shadow: var(--card-shadow);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        header:before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect x="0" y="0" width="100" height="100" fill="none" /><path d="M30,20 Q50,5 70,20 T100,40 T130,60" stroke="rgba(255,255,255,0.1)" fill="none" stroke-width="8"/></svg>') repeat;
+            opacity: 0.3;
+        }
+        
+        h1 {
+            font-weight: 700;
+            font-size: 2.5rem;
+            margin: 0;
+            letter-spacing: -0.5px;
+            position: relative;
+        }
+        
+        header p {
+            font-weight: 300;
+            font-size: 1.125rem;
+            margin-top: 8px;
+            opacity: 0.9;
+            position: relative;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 24px;
+            margin: 0 auto;
+            max-width: 1240px;
+            padding: 0 20px;
+            margin-bottom: 24px;
+        }
+        
+        .card {
+            background: var(--bg-white);
+            border-radius: var(--border-radius);
+            box-shadow: var(--card-shadow);
+            padding: 28px;
+            transition: var(--transition);
+            border: 1px solid rgba(0, 0, 0, 0.05);
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
+        }
+        
+        .card h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .card h2::before {
+            content: '';
+            display: inline-block;
+            width: 12px;
+            height: 24px;
+            background-color: var(--primary);
+            border-radius: 4px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+        }
+        
+        input, select, textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            box-sizing: border-box;
+            font-family: inherit;
+            font-size: 1rem;
+            color: var(--text-primary);
+            transition: var(--transition);
+        }
+        
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: var(--primary-light);
+            box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.15);
+        }
+        
+        button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: var(--transition);
+            width: 100%;
+        }
+        
+        button:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(67, 97, 238, 0.2);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        .model-selection {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+        
+        .model-option {
+            position: relative;
+            margin-bottom: 10px;
+        }
+        
+        .model-option input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            cursor: pointer;
+        }
+        
+        .model-option label {
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: var(--transition);
+            font-weight: 500;
+            width: 100%;
+        }
+        
+        .model-option label::before {
+            content: '';
+            width: 18px;
+            height: 18px;
+            border: 2px solid #e5e7eb;
+            border-radius: 50%;
+            margin-right: 10px;
+            transition: var(--transition);
+        }
+        
+        .model-option input[type="radio"]:checked + label {
+            border-color: var(--primary);
+            background-color: rgba(67, 97, 238, 0.05);
+        }
+        
+        .model-option input[type="radio"]:checked + label::before {
+            border-color: var(--primary);
+            background-color: var(--primary);
+            box-shadow: inset 0 0 0 4px white;
+        }
+        
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .checkbox-wrapper input[type="checkbox"] {
+            width: auto;
+            margin-right: 10px;
+        }
+        
+        .results {
+            margin-top: 24px;
+            padding: 20px;
+            background-color: rgba(67, 97, 238, 0.05);
+            border-left: 5px solid var(--primary);
+            border-radius: 8px;
+            animation: fadeIn 0.5s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(67, 97, 238, 0.2);
+            border-radius: 50%;
+            border-top: 4px solid var(--primary);
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error-message {
+            display: none;
+            color: var(--error);
+            background-color: rgba(244, 63, 94, 0.1);
+            padding: 16px;
+            border-radius: 8px;
+            margin: 20px auto;
+            max-width: 1240px;
+            font-weight: 500;
+            border-left: 5px solid var(--error);
+            animation: fadeIn 0.5s ease;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 24px;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: var(--card-shadow);
+        }
+        
+        th, td {
+            padding: 16px;
+            text-align: left;
+        }
+        
+        th {
+            background-color: rgba(67, 97, 238, 0.1);
+            font-weight: 600;
+            color: var(--primary-dark);
+            position: sticky;
+            top: 0;
+        }
+        
+        tr {
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        tbody tr:last-child {
+            border-bottom: none;
+        }
+        
+        tbody tr:hover {
+            background-color: rgba(67, 97, 238, 0.02);
+        }
+        
+        .star-rating {
+            color: #f59e0b;
+            font-size: 1.3em;
+            letter-spacing: 2px;
+        }
+        
+        .prediction-value {
+            font-size: 2.25rem;
+            font-weight: 700;
+            color: var(--primary);
+            display: block;
+            text-align: center;
+            margin-bottom: 16px;
+        }
+        
+        .prediction-label {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            text-align: center;
+            margin-bottom: 16px;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+            
+            .model-selection {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .feature-icon {
+            font-size: 1.5rem;
+            margin-right: 8px;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            padding: 20px;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        
+        .status-online {
+            background-color: var(--success);
+        }
+        
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+        }
+        
+        .tooltip-text {
+            visibility: hidden;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: var(--text-primary);
+            color: white;
+            text-align: center;
+            padding: 8px 12px;
+            border-radius: 6px;
+            width: 200px;
+            font-size: 0.85rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .tooltip:hover .tooltip-text {
+            visibility: visible;
+            opacity: 1;
+        }
+        
+        /* CSS for file input styling */
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+        
+        .file-input-wrapper input[type=file] {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        
+        .file-input-button {
+            background-color: #e5e7eb;
+            color: var(--text-primary);
+            padding: 12px 16px;
+            border-radius: 8px;
+            display: inline-block;
+            font-weight: 500;
+            text-align: center;
+            width: 100%;
+            transition: var(--transition);
+            border: 2px dashed #cbd5e1;
+        }
+        
+        .file-input-wrapper:hover .file-input-button {
+            background-color: rgba(67, 97, 238, 0.05);
+            border-color: var(--primary-light);
+        }
+        
+        .file-name {
+            margin-top: 8px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+        }
+        
+        .loading-overlay .spinner {
+            width: 80px;
+            height: 80px;
+            border: 6px solid rgba(255, 255, 255, 0.3);
+            border-top: 6px solid var(--primary);
+            margin-bottom: 20px;
+        }
+        
+        .loading-overlay p {
+            font-size: 1.2rem;
+            font-weight: 500;
+        }
+        
+        .model-status {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 15px;
+        }
+        
+        .model-badge {
+            background-color: rgba(67, 97, 238, 0.1);
+            border-radius: 20px;
+            padding: 4px 12px;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--success);
+            display: inline-block;
+        }
+        
+        .loading .status-dot {
+            background-color: var(--warning);
+            animation: pulse 1s infinite ease-in-out;
+        }
+        
+        .failed .status-dot {
+            background-color: var(--error);
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Initial loading overlay -->
+    <div id="initial-loading" class="loading-overlay">
+        <div class="spinner"></div>
+        <p>Loading NLP models...</p>
+        <div class="model-status" id="model-loading-status">
+            <!-- Model loading statuses will be added here -->
+        </div>
+    </div>
+    
+    <header>
+        <h1>NLP Model Testing Interface</h1>
+        <p>Test sentiment analysis models with CSV data or individual text</p>
+    </header>
+
+    <div class="container">
+        <div class="card">
+            <h2>Model Selection</h2>
+            <div class="form-group">
+                <label for="model-type">Select Model:</label>
+                <div class="model-selection">
+                    <div class="model-option">
+                        <input type="radio" id="simple-lstm" name="model-type" value="simple" checked>
+                        <label for="simple-lstm">Simple LSTM</label>
+                    </div>
+                    <div class="model-option">
+                        <input type="radio" id="deep-lstm" name="model-type" value="deep">
+                        <label for="deep-lstm">Deep LSTM</label>
+                    </div>
+                    <div class="model-option">
+                        <input type="radio" id="stacked-lstm" name="model-type" value="stacked">
+                        <label for="stacked-lstm">Stacked LSTM</label>
+                    </div>
+                    <div class="model-option">
+                        <input type="radio" id="ensemble" name="model-type" value="ensemble">
+                        <label for="ensemble">Ensemble</label>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="load-best">Load Best Model:</label>
+                <div class="model-option">
+                    <input type="checkbox" id="load-best" name="load-best" checked>
+                    <label for="load-best">Use best performing model (unchecked uses latest)</label>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Single Text Prediction</h2>
+            <form id="single-text-form">
+                <div class="form-group">
+                    <label for="single-text">Enter Text:</label>
+                    <textarea id="single-text" rows="4" placeholder="Type your review here..."></textarea>
+                </div>
+                <button type="submit" id="predict-single">Predict Rating</button>
+            </form>
+            <div id="single-result" class="results" style="display:none;">
+                <h3>Prediction Result:</h3>
+                <p id="single-prediction"></p>
+                <div id="single-star-rating" class="star-rating"></div>
+            </div>
+            <div id="single-loading" class="loading">
+                <div class="spinner"></div>
+                <p>Processing...</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Batch CSV Prediction</h2>
+            <form id="csv-form">
+                <div class="form-group">
+                    <label for="csv-file">Upload CSV File:</label>
+                    <div class="file-input-wrapper">
+                        <input type="file" id="csv-file" name="csv-file" accept=".csv">
+                        <span class="file-input-button">Choose CSV File</span>
+                    </div>
+                    <small>CSV should have a column named 'Text' with reviews</small>
+                </div>
+                <button type="submit" id="predict-csv">Process CSV</button>
+            </form>
+            <div id="csv-loading" class="loading">
+                <div class="spinner"></div>
+                <p>Processing CSV file...</p>
+            </div>
+            <div id="csv-result" class="results" style="display:none;">
+                <h3>CSV Prediction Results:</h3>
+                <div id="csv-prediction-table"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="error-message" class="error-message"></div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const singleTextForm = document.getElementById('single-text-form');
+            const csvForm = document.getElementById('csv-form');
+            const errorMessage = document.getElementById('error-message');
+            const initialLoading = document.getElementById('initial-loading');
+            const modelLoadingStatus = document.getElementById('model-loading-status');
+            
+            // Disable forms initially until models are loaded
+            document.querySelectorAll('button, input, textarea, select').forEach(el => {
+                el.disabled = true;
+            });
+            
+            // Check server status and models
+            async function checkServerStatus() {
+                try {
+                    const response = await fetch('/health');
+                    
+                    if (!response.ok) {
+                        throw new Error('Server not ready');
+                    }
+                    
+                    return await response.json();
+                } catch (error) {
+                    console.error('Server status check failed:', error);
+                    return { status: 'error' };
+                }
+            }
+            
+            // Poll for model loading status
+            async function pollModelStatus() {
+                const modelTypes = ['simple', 'deep', 'stacked', 'ensemble'];
+                
+                // Initialize model status badges
+                modelTypes.forEach(model => {
+                    const badge = document.createElement('div');
+                    badge.className = 'model-badge loading';
+                    badge.id = `model-${model}`;
+                    badge.innerHTML = `<span class="status-dot"></span> ${model.charAt(0).toUpperCase() + model.slice(1)}`;
+                    modelLoadingStatus.appendChild(badge);
+                });
+                
+                let allModelsLoaded = false;
+                let attempts = 0;
+                const maxAttempts = 20; // Maximum polling attempts
+                
+                while (!allModelsLoaded && attempts < maxAttempts) {
+                    attempts++;
+                    
+                    try {
+                        const status = await checkServerStatus();
+                        
+                        if (status.status === 'ok' && status.models_loaded === true) {
+                            // All models loaded successfully
+                            allModelsLoaded = true;
+                            
+                            // Update UI to show all models loaded
+                            modelTypes.forEach(model => {
+                                const badge = document.getElementById(`model-${model}`);
+                                badge.classList.remove('loading');
+                            });
+                            
+                            // Enable the interface
+                            enableInterface();
+                            break;
+                        } else if (status.models) {
+                            // Update individual model statuses
+                            Object.entries(status.models).forEach(([model, loaded]) => {
+                                const badge = document.getElementById(`model-${model}`);
+                                if (badge) {
+                                    if (loaded) {
+                                        badge.classList.remove('loading');
+                                        badge.classList.remove('failed');
+                                    } else {
+                                        badge.classList.remove('loading');
+                                        badge.classList.add('failed');
+                                    }
+                                }
+                            });
+                        }
+                    } catch (error) {
+                        console.error('Error polling model status:', error);
+                    }
+                    
+                    // Wait before polling again
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+                
+                // If we've reached max attempts without success
+                if (!allModelsLoaded) {
+                    showError('Models could not be loaded after multiple attempts. Please refresh the page or contact support.');
+                }
+            }
+            
+            // Enable interface after models are loaded
+            function enableInterface() {
+                // Hide loading overlay with fade out effect
+                initialLoading.style.opacity = '0';
+                setTimeout(() => {
+                    initialLoading.style.display = 'none';
+                }, 500);
+                
+                // Enable all form controls
+                document.querySelectorAll('button, input, textarea, select').forEach(el => {
+                    el.disabled = false;
+                });
+            }
+            
+            // Show error message
+            function showError(message) {
+                errorMessage.textContent = message;
+                errorMessage.style.display = 'block';
+                
+                // Keep loading overlay but modify it to show error
+                const loadingText = initialLoading.querySelector('p');
+                if (loadingText) {
+                    loadingText.textContent = 'Error loading models';
+                    loadingText.style.color = 'var(--error)';
+                }
+            }
+            
+            // Start polling for model status
+            pollModelStatus();
+            
+            // Single text prediction
+            singleTextForm.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                const singleText = document.getElementById('single-text').value.trim();
+                if (!singleText) {
+                    errorMessage.textContent = 'Please enter some text for prediction';
+                    return;
+                }
+                
+                const modelType = document.querySelector('input[name="model-type"]:checked').value;
+                const loadBest = document.getElementById('load-best').checked;
+                
+                // Show loading spinner
+                document.getElementById('single-loading').style.display = 'block';
+                document.getElementById('single-result').style.display = 'none';
+                errorMessage.textContent = '';
+                
+                try {
+                    const response = await fetch('/predict_text', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            text: singleText,
+                            model_type: modelType,
+                            load_best: loadBest
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Server response was not ok');
+                    }
+                    
+                    const result = await response.json();
+                    
+                    // Display result
+                    document.getElementById('single-prediction').textContent = `Predicted Rating: ${result.prediction.toFixed(1)} out of 5`;
+                    
+                    // Show stars
+                    const starRating = document.getElementById('single-star-rating');
+                    starRating.innerHTML = '';
+                    const stars = Math.round(result.prediction);
+                    for (let i = 0; i < 5; i++) {
+                        if (i < stars) {
+                            starRating.innerHTML += '★';
+                        } else {
+                            starRating.innerHTML += '☆';
+                        }
+                    }
+                    
+                    // Show result div
+                    document.getElementById('single-result').style.display = 'block';
+                } catch (error) {
+                    console.error('Error:', error);
+                    errorMessage.textContent = `Error: ${error.message}`;
+                } finally {
+                    // Hide loading spinner
+                    document.getElementById('single-loading').style.display = 'none';
+                }
+            });
+            
+            // CSV file prediction
+            csvForm.addEventListener('submit', async function(e) {
+                e.preventDefault();
+                
+                const fileInput = document.getElementById('csv-file');
+                if (!fileInput.files[0]) {
+                    errorMessage.textContent = 'Please select a CSV file';
+                    return;
+                }
+                
+                const modelType = document.querySelector('input[name="model-type"]:checked').value;
+                const loadBest = document.getElementById('load-best').checked;
+                
+                // Show loading spinner
+                document.getElementById('csv-loading').style.display = 'block';
+                document.getElementById('csv-result').style.display = 'none';
+                errorMessage.textContent = '';
+                
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                formData.append('model_type', modelType);
+                formData.append('load_best', loadBest);
+                
+                try {
+                    const response = await fetch('/predict_csv', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Server response was not ok');
+                    }
+                    
+                    const result = await response.json();
+                    
+                    // Create table with results
+                    const tableContainer = document.getElementById('csv-prediction-table');
+                    
+                    // Create table HTML
+                    let tableHTML = `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Text</th>
+                                    <th>Predicted Rating</th>
+                                    <th>Star Rating</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                    `;
+                    
+                    // Add table rows
+                    result.predictions.forEach((item, index) => {
+                        const stars = Math.round(item.prediction);
+                        let starHTML = '';
+                        for (let i = 0; i < 5; i++) {
+                            if (i < stars) {
+                                starHTML += '★';
+                            } else {
+                                starHTML += '☆';
+                            }
+                        }
+                        
+                        tableHTML += `
+                            <tr>
+                                <td>${index + 1}</td>
+                                <td>${item.text}</td>
+                                <td>${item.prediction.toFixed(1)}</td>
+                                <td class="star-rating">${starHTML}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    tableHTML += `
+                            </tbody>
+                        </table>
+                    `;
+                    
+                    tableContainer.innerHTML = tableHTML;
+                    document.getElementById('csv-result').style.display = 'block';
+                    
+                } catch (error) {
+                    console.error('Error:', error);
+                    errorMessage.textContent = `Error: ${error.message}`;
+                } finally {
+                    // Hide loading spinner
+                    document.getElementById('csv-loading').style.display = 'none';
+                }
+            });
+        });
+    </script>
+</body>
+</html>

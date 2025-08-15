@@ -184,7 +184,8 @@ class ModelBuilder:
         
         # Load the saved state
         try:
-            model.load_state_dict(torch.load(model_path))
+            # Use map_location to ensure models saved on CUDA can be loaded on CPU
+            model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
             self.logger.info(f"Model loaded from {model_path}")
         except Exception as e:
             self.logger.error(f"Error loading model: {e}")
