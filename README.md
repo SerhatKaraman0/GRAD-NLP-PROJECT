@@ -7,38 +7,38 @@
 
 A comprehensive, production-ready NLP sentiment analysis system featuring state-of-the-art deep learning models, GPU acceleration, interactive web interfaces, and extensive visualization capabilities. This project demonstrates enterprise-level ML engineering practices with modular architecture, comprehensive testing, and deployment-ready containerization.
 
-## 🚀 **Project Overview**
+##  **Project Overview**
 
 This project implements a complete end-to-end sentiment analysis pipeline with the following core capabilities:
 
-### **🧠 Advanced Deep Learning Models**
+### ** Advanced Deep Learning Models**
 - **CNN-BiLSTM Hybrid Architecture**: Combines convolutional and recurrent networks with attention mechanisms
 - **Ensemble Methods**: Multiple model aggregation strategies for improved accuracy and robustness
 - **Advanced Neural Architectures**: Gated CNNs, self-attention mechanisms, and residual connections
 - **Model Variants**: Simple LSTM, Deep BiLSTM, Stacked LSTM, and sophisticated Ensemble models
 - **Attention Mechanisms**: Self-attention and multi-head attention for enhanced text understanding
 
-### **⚡ GPU Acceleration & High Performance Computing**
+### ** GPU Acceleration & High Performance Computing**
 - **Custom CUDA Kernels**: Hand-optimized CUDA operations for text processing
 - **Intelligent Memory Management**: Dynamic GPU memory allocation and monitoring
 - **Optimized Batch Processing**: Adaptive batch sizing based on available GPU memory
 - **Performance Benchmarking**: Comprehensive GPU vs CPU performance analysis tools
 - **Memory Optimization**: Advanced memory management with garbage collection and caching
 
-### **🔧 Advanced Natural Language Processing**
+### ** Advanced Natural Language Processing**
 - **Multi-Library Integration**: spaCy, NLTK, TextBlob, and VADER sentiment analysis
 - **Sophisticated Preprocessing**: Lemmatization, named entity recognition, spelling correction
 - **Domain-Specific Processing**: Customizable text preprocessing for specific domains
 - **Quality Control**: Text quality scoring, duplicate detection, and data validation
 - **Multiple Embedding Support**: GloVe, FastText, Word2Vec, and custom domain-specific embeddings
 
-### **📊 Comprehensive Visualization & Analysis**
+### ** Comprehensive Visualization & Analysis**
 - **Interactive HTML Dashboards**: Real-time model performance visualization
 - **Web-Based Testing Interface**: Flask application for interactive model testing
 - **Advanced Metrics Visualization**: Confusion matrices, error distributions, training curves
 - **Comparative Analysis**: Side-by-side model performance comparison
 
-### **🐳 Production-Ready Deployment**
+### ** Production-Ready Deployment**
 - **Docker Containerization**: Optimized multi-stage Docker builds
 - **Cross-Platform Support**: Windows (build.bat) and Unix (Makefile) build systems
 - **Configuration Management**: JSON-based configuration system
@@ -107,7 +107,7 @@ NLP-Learning/                           # Root project directory
 └── README.md                          # This documentation
 ```
 
-## 🛠️ **Installation Guide**
+##  **Installation Guide**
 
 ### **System Requirements**
 - **Python**: 3.8+ (recommended: 3.11)
@@ -141,7 +141,7 @@ docker build -t nlp-sentiment .
 docker run -d --name nlp-container --gpus all -p 8080:8080 nlp-sentiment
 ```
 
-## 🚀 **Quick Start**
+## **Quick Start**
 
 ### **1. Complete Pipeline**
 ```bash
@@ -168,7 +168,7 @@ python run_cnn_bilstm_training.py
 python benchmark_gpu_performance.py
 ```
 
-## 📚 **API Documentation**
+##  **API Documentation**
 
 ### **Core Classes**
 
@@ -304,7 +304,7 @@ export LOG_LEVEL=INFO
 }
 ```
 
-## 📈 **Performance Benchmarks**
+##  **Performance Benchmarks**
 
 | Model Type | Accuracy | F1-Score | Training Time | GPU Memory |
 |------------|----------|----------|---------------|------------|
@@ -319,7 +319,7 @@ export LOG_LEVEL=INFO
 - **Training**: 8-12x speedup vs CPU
 - **Inference**: 15-20x speedup vs CPU
 
-## 🔧 **Troubleshooting**
+##  **Troubleshooting**
 
 ### **GPU Memory Issues**
 ```bash
@@ -339,13 +339,13 @@ python src/models/test_models.py --check_compatibility
 python -m src.main --rebuild_models
 ```
 
-## 📚 **Additional Documentation**
+##  **Additional Documentation**
 
 - [Model Testing Guide](tests/README_MODEL_TESTING.md)
 - [CNN-BiLSTM Documentation](src/models/README_CNN_BILSTM.md)
 - [Visualization Features](docs/visualization_features.md)
 
-## 🚀 **Deployment**
+##  **Deployment**
 
 ### **Docker Production**
 ```bash
@@ -357,10 +357,8 @@ docker run -d --name nlp-prod \
   nlp-sentiment:latest
 ```
 
-### **Cloud Deployment**
-Supports AWS, GCP, Azure with GPU instances. See Docker Compose configurations for scalable deployments.
 
-## 🤝 **Contributing**
+##  **Contributing**
 
 1. Fork the repository
 2. Create feature branch: `git checkout -b feature/amazing-feature`
@@ -369,11 +367,8 @@ Supports AWS, GCP, Azure with GPU instances. See Docker Compose configurations f
 5. Run tests: `make test`
 6. Submit pull request
 
-## 📄 **License**
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🙏 **Acknowledgments**
+##  **Acknowledgments**
 
 - PyTorch and TensorFlow teams
 - Hugging Face for transformers
@@ -385,4 +380,3 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 **⭐ Star this repository if you find it useful!**
 
-**Made with ❤️ for the NLP and Machine Learning community**
